@@ -22,6 +22,15 @@ vim.api.nvim_create_autocmd("VimEnter", {
     vim.bo[buf].swapfile = false
     vim.bo[buf].filetype = "startscreen"
     vim.bo[buf].modifiable = true
+    local nvim_version = vim.version()
+        local version_str = string.format(
+"==================== Neovim Version: v%d.%d.%d  ===============================",
+            nvim_version.major,
+            nvim_version.minor,
+            nvim_version.patch
+          )
+
+
 
     -- Replace the old `local lines = { ... }` with this:
     local art = [[
@@ -32,9 +41,9 @@ vim.api.nvim_create_autocmd("VimEnter", {
 ========         |.-""""""""""""""""""-.|   |-----|          ==================
 ========         ||                    ||   | === |          ==================
 ========         || malav-config-ver:  ||   |-----|          ==================
-========         ||      0.2.0         ||   | === |          ==================
+========         ||      0.3.0         ||   | === |          ==================
 ========         ||                    ||   |-----|          ==================
-========         ||:Tutor              ||   |:::::|          ==================
+========         ||                    ||   |:::::|          ==================
 ========         |'-..................-'|   |____o|          ==================
 ========         `"")----------------(""`   ___________      ==================
 ========        /::::::::::|  |::::::::::\  \          \     ==================
@@ -91,7 +100,11 @@ vim.api.nvim_create_autocmd("VimEnter", {
 ===============================================================================
 ]]
 
+
+
     local lines = vim.split(art, "\n", { plain = true })
+    -- Replace the first line with version info
+    lines[1] = version_str
 
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     -- === make the art pink ===
