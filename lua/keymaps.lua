@@ -72,8 +72,10 @@ vim.keymap.set("v", "<", "<gv", { noremap = true })
 vim.keymap.set("n", "<leader>e", "<cmd>NvimTreeFindFileToggle<CR>", { noremap = true, silent = true })
 -- delete highligt in to void registry
 vim.keymap.set("x", "<leader>p", "\"_dP")
--- leader q to write and quit all 
-vim.keymap.set("n", "<leader>q", "<cmd>wqa!<CR>")
+-- leader z to write and quit all 
+vim.keymap.set("n", "<leader>z", "<cmd>wqa!<CR>")
+-- leader q to quit all 
+vim.keymap.set("n", "<leader>q", "<cmd>qa!<CR>")
 
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
