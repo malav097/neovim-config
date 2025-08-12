@@ -1,4 +1,4 @@
-local group = vim.api.nvim_create_augroup("StartMessageDashboard", { clear = true })
+-- pcall(function()
 
 vim.api.nvim_create_autocmd("VimEnter", {
   group = group,
@@ -134,12 +134,32 @@ malav config ver: 0.1.0........................................................
     })
     -- === OPEN NEO-TREE WITH THE DASHBOARD ===
     -- Use the API to avoid race conditions; works because you set lazy=false for neo-tree.
-    pcall(function()
-      require("neo-tree.command").execute({
-        action = "show", -- or 'reveal' if you want to jump to current file when there is one
-        position = "left",
-        source = "filesystem",
-        dir = vim.loop.cwd(),
+    -- pcall(function()
+    -- require("neo-tree.command").execute({
+    -- action = "show", -- or 'reveal' if you want to jump to current file when there is one
+    -- position = "left",
+    -- source = "filesystem",
+    -- dir = vim.loop.cwd(),
+    -- })
+    -- end)
+
+    vim.schedule(function()
+      -- create right split and move focus there
+      vim.cmd("vsplit")
+      vim.cmd("enew") -- open empty buffer
+      vim.cmd("wincmd l")
+
+      -- launch Telescope via Lua (avoid :Telescope)
+      require("telescope.builtin").find_files({
+        layout_strategy = "cursor",
+        layout_config = {
+          width = 0.4, -- feels like a right sidebar
+          height = 0.95,
+          preview_cutoff = 0,
+          preview_width = 0,
+        },
+        sorting_strategy = "ascending",
+        default_text = "", -- force empty prompt, even if something sneaks in
       })
     end)
   end,

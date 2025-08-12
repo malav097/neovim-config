@@ -67,7 +67,7 @@ end)
 
 vim.keymap.set("v", ">", ">gv", { noremap = true })
 vim.keymap.set("v", "<", "<gv", { noremap = true })
-
+vim.keymap.set("n", "<leader>e", "<cmd>NvimTreeFindFileToggle<CR>", { noremap = true, silent = true })
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
 
