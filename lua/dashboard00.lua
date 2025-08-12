@@ -24,7 +24,7 @@ vim.api.nvim_create_autocmd("VimEnter", {
     vim.bo[buf].modifiable = true
     local nvim_version = vim.version()
         local version_str = string.format(
-"==================== Neovim Version: v%d.%d.%d  ===============================",
+"==================== Neovim Version: v%d.%d.%d ================================",
             nvim_version.major,
             nvim_version.minor,
             nvim_version.patch
