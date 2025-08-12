@@ -94,7 +94,7 @@ vim.g.maplocalleader = ' '
 vim.g.have_nerd_font = false
 
 -- [[ Setting custom dashboard ]]
-require 'dashboard'
+require 'dashboard00'
 
 -- [[ Setting options ]]
 require 'options'
