@@ -23,23 +23,6 @@ vim.api.nvim_create_autocmd("VimEnter", {
     vim.bo[buf].filetype = "startscreen"
     vim.bo[buf].modifiable = true
 
-    vim.wo.number = false
-    vim.wo.relativenumber = false
-    vim.wo.signcolumn = "no"
-    vim.wo.list = false
-    vim.wo.cursorline = false
-
-    -- opaque bg ONLY for this window
-    local bg = "#1a1b26" -- tokyonight-night default
-    pcall(function()
-      local c = require("tokyonight.colors").setup({})
-      if c and c.bg then
-        bg = c.bg
-      end
-    end)
-    vim.api.nvim_set_hl(0, "StartscreenNormal", { bg = bg })
-    vim.wo.winhl = "Normal:StartscreenNormal,NormalNC:StartscreenNormal,EndOfBuffer:StartscreenNormal"
-
     -- Replace the old `local lines = { ... }` with this:
     local art = [[
 malav config ver: 0.1.0........................................................
@@ -107,41 +90,6 @@ malav config ver: 0.1.0........................................................
     vim.bo[buf].modifiable = false
     vim.bo[buf].readonly = true
     vim.bo[buf].modified = false -- <- crucial so :wqa! doesn't complain
-
-    -- Re-apply/restore window-local settings when this buffer enters/leaves a window
-    local dashfix = vim.api.nvim_create_augroup("StartscreenWindowLocal", { clear = true })
-
-    vim.api.nvim_create_autocmd("BufWinEnter", {
-      group = dashfix,
-      buffer = buf,
-      callback = function()
-        -- ensure dashboard keeps its overrides if refocused
-        vim.wo.number = false
-        vim.wo.relativenumber = false
-        vim.wo.winhl = "Normal:StartscreenNormal,NormalNC:StartscreenNormal,EndOfBuffer:StartscreenNormal"
-      end,
-    })
-
-    vim.api.nvim_create_autocmd("BufWinLeave", {
-      group = dashfix,
-      buffer = buf,
-      callback = function()
-        -- leaving the dashboard window: restore your normal defaults
-        vim.wo.winhl = ""
-        vim.wo.number = default_number
-        vim.wo.relativenumber = default_relativenumber
-      end,
-    })
-    -- === OPEN NEO-TREE WITH THE DASHBOARD ===
-    -- Use the API to avoid race conditions; works because you set lazy=false for neo-tree.
-    -- pcall(function()
-    -- require("neo-tree.command").execute({
-    -- action = "show", -- or 'reveal' if you want to jump to current file when there is one
-    -- position = "left",
-    -- source = "filesystem",
-    -- dir = vim.loop.cwd(),
-    -- })
-    -- end)
 
     vim.schedule(function()
       -- create right split and move focus there
