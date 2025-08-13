@@ -90,6 +90,21 @@ vim.keymap.set("n", "<leader>08", 'i  - ')
 -- toggleterm
 vim.keymap.set("n", "<leader>5f", "<cmd>ToggleTerm direction=float<CR>")
 vim.keymap.set("n", "<leader>5h", "<cmd>ToggleTerm<CR>")
+-- vertical term
+vim.keymap.set("n", "<leader>5v", function()
+  -- Open a vertical split to the right
+  -- vim.cmd("vsplit")
+
+  -- Resize it to 40% of total columns
+  local total_cols = vim.o.columns
+  local target_width = math.floor(total_cols * 0.4)
+  vim.cmd(target_width .. "vsplit")
+
+  -- Start terminal in the new split
+  vim.cmd("term")
+end, { desc = "Vertical terminal at 40% width" })
+
+
 
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
