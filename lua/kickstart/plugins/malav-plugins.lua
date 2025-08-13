@@ -33,12 +33,12 @@ return {
       "nvim-lua/plenary.nvim",
       "MunifTanjim/nui.nvim",
       --- The below dependencies are optional,
-      "echasnovski/mini.pick",      -- for file_selector provider mini.pick
+      "echasnovski/mini.pick",         -- for file_selector provider mini.pick
       "nvim-telescope/telescope.nvim", -- for file_selector provider telescope
-      "hrsh7th/nvim-cmp",           -- autocompletion for avante commands and mentions
-      "ibhagwan/fzf-lua",           -- for file_selector provider fzf
-      "nvim-tree/nvim-web-devicons", -- or echasnovski/mini.icons
-      "zbirenbaum/copilot.lua",     -- for providers='copilot'
+      "hrsh7th/nvim-cmp",              -- autocompletion for avante commands and mentions
+      "ibhagwan/fzf-lua",              -- for file_selector provider fzf
+      "nvim-tree/nvim-web-devicons",   -- or echasnovski/mini.icons
+      "zbirenbaum/copilot.lua",        -- for providers='copilot'
       {
         -- support for image pasting
         "HakonHarnes/img-clip.nvim",
@@ -78,34 +78,48 @@ return {
       require("nvim-tree").setup {}
     end,
   },
+  {
+    'lucidph3nx/nvim-sops',
+    event = { 'BufEnter' },
+    opts = {
+      -- your configuration comes here
+      -- or leave it empty to use the default settings
+      -- refer to the configuration section below
+    }
+  },
+  {
+    -- amongst your other plugins
+    { 'akinsho/toggleterm.nvim', version = "*", config = true }
+    -- or
+  },
 
   -- add this to your lua/plugins.lua, lua/plugins/init.lua,  or the file you keep your other plugins:
-  {
-    "numToStr/Comment.nvim",
-    event = "VeryLazy",
-    opts = {
-      -- turn off default mappings so we only use <leader>//:
-      mappings = { basic = false, extra = false, extended = false },
-    },
-    config = function(_, opts)
-      require("Comment").setup(opts)
-
-      local api = require("Comment.api")
-
-      -- Toggle current line
-      vim.keymap.set(
-        "n",
-        "<leader>//",
-        api.toggle.linewise.current,
-        { desc = "Comment: toggle line", silent = true }
-      )
-
-      -- Toggle selection (visual mode)
-      vim.keymap.set("x", "<leader>//", function()
-        api.toggle.linewise(vim.fn.visualmode())
-      end, { desc = "Comment: toggle selection", silent = true })
-    end,
-  },
+  --   {
+  --     "numToStr/Comment.nvim",
+  --     event = "VeryLazy",
+  --     opts = {
+  --       -- turn off default mappings so we only use <leader>//:
+  --       mappings = { basic = false, extra = false, extended = false },
+  --     },
+  --     config = function(_, opts)
+  --       require("Comment").setup(opts)
+  --
+  --       local api = require("Comment.api")
+  --
+  --       -- Toggle current line
+  --       vim.keymap.set(
+  --         "n",
+  --         "<leader>//",
+  --         api.toggle.linewise.current,
+  --         { desc = "Comment: toggle line", silent = true }
+  --       )
+  --
+  --       -- Toggle selection (visual mode)
+  --       vim.keymap.set("x", "<leader>//", function()
+  --         api.toggle.linewise(vim.fn.visualmode())
+  --       end, { desc = "Comment: toggle selection", silent = true })
+  --     end,
+  --   },
   -- {
   --   "jackMort/ChatGPT.nvim",
   --   event = "VeryLazy",
