@@ -90,6 +90,24 @@ vim.keymap.set("n", "<leader>08", 'i  - ')
 -- toggleterm
 vim.keymap.set("n", "<leader>5f", "<cmd>ToggleTerm direction=float<CR>")
 vim.keymap.set("n", "<leader>5h", "<cmd>ToggleTerm<CR>")
+-- AI remaps
+vim.keymap.set(
+  'v',
+  '<leader>4d',
+  [[:'<,'>AvanteEdit correct granmar and format in a professional way using markdown. use correct puntuation. no more than 80 characters per line and if it is in another language translate to english<CR>]],
+  {
+    noremap = true,
+  }
+)
+vim.keymap.set(
+  'v',
+  '<leader>4e',
+  [[:'<,'>AvanteEdit correct granmar and format in a professional way using markdown. use correct puntuation. Use proper capitalization. no more than 80 characters per line and if it is in another language translate to spanish<CR>]],
+  {
+    noremap = true,
+  }
+)
+
 -- vertical term
 vim.keymap.set("n", "<leader>5v", function()
   -- Open a vertical split to the right
