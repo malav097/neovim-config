@@ -21,7 +21,8 @@ return {
       version = "v0.0.15",
       mode = "legacy",
       providers = {
-        openai = { model = "gpt-4o", disable_tools = true },
+--        openai = { model = "gpt-4o", disable_tools = true },
+        openai = { model = "gpt-5" },
       },
     },
 
