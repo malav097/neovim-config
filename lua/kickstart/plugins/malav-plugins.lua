@@ -18,7 +18,7 @@ return {
     lazy = false,
     opts = {
       -- add any opts here
-      version = "v0.0.15",
+      version = false,
       mode = "legacy",
       providers = {
 --        openai = { model = "gpt-4o", disable_tools = true },
