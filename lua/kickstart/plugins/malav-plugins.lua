@@ -113,6 +113,55 @@ return {
         cfg.highlights.NormalFloat = cfg.highlights.NormalFloat or {}
         cfg.highlights.NormalFloat.guifg = cyan
         cfg.highlights.NormalFloat.ctermfg = 44
+
+        local Terminal = require("toggleterm.terminal").Terminal
+        local quake_term
+
+        local termcodes = function(str)
+          return vim.api.nvim_replace_termcodes(str, true, false, true)
+        end
+
+        local function leave_terminal_mode()
+          if vim.api.nvim_get_mode().mode == "t" then
+            vim.api.nvim_feedkeys(termcodes("<C-\\><C-n>"), "n", false)
+          end
+        end
+
+        local function quake_toggle()
+          leave_terminal_mode()
+
+          if not quake_term then
+            quake_term = Terminal:new({
+              count = 54,
+              direction = "float",
+              float_opts = {
+                border = "rounded",
+                width = function()
+                  return math.floor(vim.o.columns * 0.96)
+                end,
+                height = function()
+                  return math.max(12, math.floor(vim.o.lines * 0.4))
+                end,
+                col = function()
+                  local width = math.floor(vim.o.columns * 0.96)
+                  return math.floor((vim.o.columns - width) / 2)
+                end,
+                row = function()
+                  return 1
+                end,
+              },
+            })
+          end
+
+          quake_term:toggle()
+          if quake_term:is_open() then
+            vim.schedule(function()
+              if quake_term:is_open() then vim.cmd("startinsert!") end
+            end)
+          end
+        end
+
+        vim.keymap.set({ "n", "t" }, "<leader>54", quake_toggle, { desc = "ToggleTerm drop-down" })
       end,
     },
     -- or
