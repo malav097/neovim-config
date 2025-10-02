@@ -88,7 +88,7 @@ vim.keymap.set("n", "<leader>09", 'i  - [ ] ')
 -- insert list
 vim.keymap.set("n", "<leader>08", 'i  - ')
 -- toggleterm
-vim.keymap.set("n", "<leader>5f", "<cmd>ToggleTerm direction=float<CR>")
+vim.keymap.set("n", "<leader>55", "<cmd>ToggleTerm direction=float<CR>")
 vim.keymap.set("n", "<leader>5h", "<cmd>ToggleTerm<CR>")
 -- AI remaps
 vim.keymap.set(

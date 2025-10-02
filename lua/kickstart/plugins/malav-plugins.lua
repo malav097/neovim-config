@@ -91,7 +91,30 @@ return {
   },
   {
     -- amongst your other plugins
-    { 'akinsho/toggleterm.nvim', version = "*", config = true }
+    {
+      'akinsho/toggleterm.nvim',
+      version = "*",
+      opts = {
+        highlights = {
+          Normal = { guifg = "#00d6ec", ctermfg = 44 },
+          NormalFloat = { guifg = "#00d6ec", ctermfg = 44 },
+        },
+      },
+      config = function(_, opts)
+        local cyan = "#00d6ec"
+        local term = require("toggleterm")
+        term.setup(opts)
+
+        local cfg = require("toggleterm.config")
+        cfg.highlights = cfg.highlights or {}
+        cfg.highlights.Normal = cfg.highlights.Normal or {}
+        cfg.highlights.Normal.guifg = cyan
+        cfg.highlights.Normal.ctermfg = 44
+        cfg.highlights.NormalFloat = cfg.highlights.NormalFloat or {}
+        cfg.highlights.NormalFloat.guifg = cyan
+        cfg.highlights.NormalFloat.ctermfg = 44
+      end,
+    },
     -- or
   },
 
