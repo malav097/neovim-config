@@ -60,10 +60,62 @@ vim.schedule(function()
       nnoremap <leader>av <cmd>vertical split<cr>
       nnoremap <leader>as <cmd>split<cr>
       tnoremap <leader><Esc> <C-\><C-n>j:
-      let g:vimwiki_list = [{'path': '~/Dropbox/log', 'syntax': 'markdown', 'ext': '.md'},
-                        \ {'path': '~/Dropbox/log/general', 'syntax': 'markdown', 'ext': '.md'}]
   ]])
 end)
+
+vim.g.vimwiki_list = {
+  {
+    path = '~/Dropbox/log',
+    syntax = 'markdown',
+    ext = '.md',
+    diary_frequency = 'monthly',
+    diary_rel_path = 'diary/monthly/',
+  },
+  {
+    path = '~/Dropbox/log/general',
+    syntax = 'markdown',
+    ext = '.md',
+    diary_frequency = 'monthly',
+    diary_rel_path = 'diary/monthly/',
+  },
+}
+
+vim.g.vimwiki_diary_frequency = 'monthly'
+vim.g.vimwiki_diary_rel_path = 'diary/monthly/'
+vim.g.vimwiki_diary_index = 'diary'
+vim.g.vimwiki_diary_header = 'Diary'
+
+local function monthly_template_lines()
+  local buf = vim.api.nvim_get_current_buf()
+  local name = vim.api.nvim_buf_get_name(buf)
+  local month = name:match('(%d%d%d%d%-%d%d)%.md$') or os.date('%Y-%m')
+  local header = '# ' .. month
+  return {
+    header,
+    '',
+    '- [ ] TAREAS-MENSUALES',
+    '  - [ ] cambiar dolares',
+    '  - [ ] regar plantas',
+    '  - [ ] emitir factura e',
+    '  - [ ] pagar internet mama',
+    '  - [ ] pagar estacionamiento',
+    '  - [ ] pagar renta y expensas',
+    '  - [ ] pagar tuenti',
+    '  - [ ] pagar cuota auto santander',
+  }
+end
+
+vim.keymap.set('n', '<leader>w<leader>5', function()
+  local buf = vim.api.nvim_get_current_buf()
+  local first = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ''
+  local template = monthly_template_lines()
+  if vim.api.nvim_buf_line_count(buf) == 1 and first == '' then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, template)
+  else
+    local row = vim.api.nvim_win_get_cursor(0)[1]
+    vim.api.nvim_buf_set_lines(buf, row, row, true, template)
+  end
+end, { desc = 'Insert monthly diary template' })
 
 -- Indentation maintains the highlight on the selected block
 vim.keymap.set("v", ">", ">gv", { noremap = true })
