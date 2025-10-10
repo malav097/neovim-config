@@ -96,12 +96,12 @@ local function monthly_template_lines()
     '- [ ] TAREAS-MENSUALES',
     '  - [ ] cambiar dolares',
     '  - [ ] regar plantas',
-    '  - [ ] emitir factura e',
     '  - [ ] pagar internet mama',
     '  - [ ] pagar estacionamiento',
     '  - [ ] pagar renta y expensas',
-    '  - [ ] pagar tuenti',
-    '  - [ ] pagar cuota auto santander',
+    '  - [ ] pagar digitel',
+    '  - [ ] pagar cuota carro',
+    '  - [ ] pagar cashea',
   }
 end
 
