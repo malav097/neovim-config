@@ -13,6 +13,21 @@ return {
 
   { "dhruvasagar/vim-table-mode" },
   {
+    "djoshea/vim-autoread",
+    event = { "BufEnter", "FocusGained", "CursorHold", "CursorHoldI" },
+    config = function()
+      vim.o.autoread = true
+      local group = vim.api.nvim_create_augroup(
+        "vim_autoread_refresh",
+        { clear = true }
+      )
+      vim.api.nvim_create_autocmd(
+        { "FocusGained", "TermClose", "TermLeave", "BufEnter" },
+        { group = group, command = "silent! checktime" }
+      )
+    end,
+  },
+  {
     "yetone/avante.nvim",
     event = "VeryLazy",
     lazy = false,
