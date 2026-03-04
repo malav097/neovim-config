@@ -85,24 +85,168 @@ vim.g.vimwiki_diary_rel_path = 'diary/monthly/'
 vim.g.vimwiki_diary_index = 'diary'
 vim.g.vimwiki_diary_header = 'Diary'
 
+local function figlet_banner_lines(text)
+  if text == nil or text == '' then
+    return nil
+  end
+  if vim.fn.executable("figlet") == 0 then
+    return nil
+  end
+
+  local out = vim.fn.systemlist({ "figlet", "-f", "banner", text })
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+  return out
+end
+
+local function month_name_es(month_num)
+  local months = {
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre",
+  }
+  return months[month_num]
+end
+
+local function year_month_from_filename(path)
+  if path == nil or path == '' then
+    return nil, nil
+  end
+
+  local year, month = path:match('(%d%d%d%d)%-(%d%d)%-%d%d%.md$')
+  if year == nil then
+    year, month = path:match('(%d%d%d%d)%-(%d%d)%.md$')
+  end
+  year = tonumber(year)
+  month = tonumber(month)
+  if year == nil or month == nil or month < 1 or month > 12 then
+    return nil, nil
+  end
+  return year, month
+end
+
+local function month_num_from_filename(path)
+  local _, month = year_month_from_filename(path)
+  return month
+end
+
+local function diary_dir_from_path(path)
+  if path == nil or path == '' then
+    return nil
+  end
+  local dir = path:match('^(.*)/diary/monthly/')
+  if dir == nil or dir == '' then
+    return nil
+  end
+  return dir .. '/diary/monthly/'
+end
+
+local function previous_month_year_month(year, month)
+  if year == nil or month == nil then
+    return nil, nil
+  end
+  local prev_month = month - 1
+  local prev_year = year
+  if prev_month < 1 then
+    prev_month = 12
+    prev_year = year - 1
+  end
+  return prev_year, prev_month
+end
+
+local function extract_incomplete_tasks(lines)
+  local tasks = {}
+  if lines == nil then
+    return tasks
+  end
+  for _, line in ipairs(lines) do
+    if line:match('^%s*%- %[[xX]%]') then
+      -- completed task, skip
+    elseif line:match('^%s*%- %[%s%]') then
+      local text = line:gsub('^%s*%- %[%s%]%s*', '')
+      if text ~= '' then
+        local upper = text:upper()
+        if upper ~= 'TAREAS-MENSUALES' and upper ~= 'TAREAS-MES-PASADO' then
+          table.insert(tasks, text)
+        end
+      end
+    end
+  end
+  return tasks
+end
+
+local function previous_month_tasks_lines(year, month, diary_dir)
+  local lines = { '', '- [ ] TAREAS-MES-PASADO' }
+  if year == nil or month == nil or diary_dir == nil or diary_dir == '' then
+    return lines
+  end
+
+  local prev_year, prev_month = previous_month_year_month(year, month)
+  if prev_year == nil or prev_month == nil then
+    return lines
+  end
+
+  local base_dir = vim.fn.expand(diary_dir)
+  if base_dir:sub(-1) ~= '/' then
+    base_dir = base_dir .. '/'
+  end
+
+  local prev_path = string.format('%s%04d-%02d-01.md', base_dir, prev_year, prev_month)
+  if vim.fn.filereadable(prev_path) ~= 1 then
+    return lines
+  end
+
+  local prev_lines = vim.fn.readfile(prev_path)
+  local tasks = extract_incomplete_tasks(prev_lines)
+  for _, task in ipairs(tasks) do
+    table.insert(lines, '  - [ ] ' .. task)
+  end
+  return lines
+end
+
 local function monthly_template_lines()
   local buf = vim.api.nvim_get_current_buf()
   local name = vim.api.nvim_buf_get_name(buf)
-  local month = name:match('(%d%d%d%d%-%d%d)%.md$') or os.date('%Y-%m')
-  local header = '# ' .. month
-  return {
-    header,
+  local now = os.date("*t")
+  local year, month_num = year_month_from_filename(name)
+  if year == nil or month_num == nil then
+    year = now.year
+    month_num = now.month
+  end
+  local month_name = month_name_es(month_num) or month_name_es(now.month) or 'Mes'
+  local header_lines = figlet_banner_lines(month_name) or { '# ' .. month_name }
+  local lines = {}
+  vim.list_extend(lines, header_lines)
+  vim.list_extend(lines, {
+    '',
+    '================================================================================ ',
     '',
     '- [ ] TAREAS-MENSUALES',
     '  - [ ] cambiar dolares',
     '  - [ ] regar plantas',
+    '  - [ ] lavar ropa',
     '  - [ ] pagar internet mama',
+    '  - [ ] pagar internet mio',
+    '  - [ ] manda invoice',
     '  - [ ] pagar estacionamiento',
     '  - [ ] pagar renta y expensas',
-    '  - [ ] pagar digitel',
-    '  - [ ] pagar cuota carro',
-    '  - [ ] pagar cashea',
-  }
+    '  - [ ] pagar tuenti',
+    '  - [ ] pagar seguro hilux',
+  })
+  local diary_dir = diary_dir_from_path(name) or '~/Dropbox/log/diary/monthly/'
+  local prev_lines = previous_month_tasks_lines(year, month_num, diary_dir)
+  vim.list_extend(lines, prev_lines)
+  return lines
 end
 
 vim.keymap.set('n', '<leader>w<leader>5', function()
