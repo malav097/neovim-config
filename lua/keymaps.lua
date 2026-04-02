@@ -164,29 +164,105 @@ local function previous_month_year_month(year, month)
   return prev_year, prev_month
 end
 
-local function extract_incomplete_tasks(lines)
-  local tasks = {}
-  if lines == nil then
-    return tasks
+local function is_separator_line(line)
+  return line ~= nil and line:match('^%s*=+%s*$') ~= nil
+end
+
+local function extract_checkbox_task(line)
+  if line == nil then
+    return nil, nil
   end
+  return line:match('^%s*%- %[(.)%]%s*(.-)%s*$')
+end
+
+local function is_task_section_label(text)
+  if text == nil or text == '' then
+    return false
+  end
+  local normalized = text:upper():gsub('[%s%-_]', '')
+  return normalized == 'TAREASMENSUALES' or normalized == 'TAREASMESPASADO'
+end
+
+local function extract_incomplete_task_sections(lines)
+  local sections = {}
+  if lines == nil then
+    return sections
+  end
+
+  local current_section = nil
+  local can_capture_title = false
+
   for _, line in ipairs(lines) do
-    if line:match('^%s*%- %[[xX]%]') then
-      -- completed task, skip
-    elseif line:match('^%s*%- %[%s%]') then
-      local text = line:gsub('^%s*%- %[%s%]%s*', '')
-      if text ~= '' then
-        local upper = text:upper()
-        if upper ~= 'TAREAS-MENSUALES' and upper ~= 'TAREAS-MES-PASADO' then
-          table.insert(tasks, text)
+    if is_separator_line(line) then
+      current_section = {
+        separator = line,
+        title = nil,
+        tasks = {},
+      }
+      table.insert(sections, current_section)
+      can_capture_title = true
+    elseif current_section ~= nil then
+      if line:match('^%s*$') then
+        -- ignore empty lines while scanning the section
+      else
+        local marker, text = extract_checkbox_task(line)
+        if marker ~= nil then
+          can_capture_title = false
+          if marker == ' ' and text ~= '' and not is_task_section_label(text) then
+            table.insert(current_section.tasks, line)
+          end
+        elseif can_capture_title and not line:match('^%s*%- ') then
+          current_section.title = line
+          can_capture_title = false
         end
       end
     end
   end
-  return tasks
+
+  local filtered_sections = {}
+  for _, section in ipairs(sections) do
+    if #section.tasks > 0 then
+      table.insert(filtered_sections, section)
+    end
+  end
+  return filtered_sections
+end
+
+local function append_task_section(lines, separator, title, tasks)
+  if tasks == nil or #tasks == 0 then
+    return
+  end
+
+  table.insert(lines, '')
+  table.insert(lines, separator or '================================================================================ ')
+  table.insert(lines, '')
+  if title ~= nil and title ~= '' then
+    table.insert(lines, title)
+    table.insert(lines, '')
+  end
+  vim.list_extend(lines, tasks)
+end
+
+local function normalize_task_lines(tasks, indent)
+  local normalized = {}
+  local prefix = string.rep(' ', indent or 0) .. '- [ ] '
+
+  if tasks == nil then
+    return normalized
+  end
+
+  for _, line in ipairs(tasks) do
+    local marker, text = extract_checkbox_task(line)
+    if marker ~= nil and text ~= nil and text ~= '' then
+      table.insert(normalized, prefix .. text)
+    end
+  end
+
+  return normalized
 end
 
 local function previous_month_tasks_lines(year, month, diary_dir)
-  local lines = { '', '- [ ] TAREAS-MES-PASADO' }
+  local lines = {}
   if year == nil or month == nil or diary_dir == nil or diary_dir == '' then
     return lines
   end
@@ -207,10 +283,34 @@ local function previous_month_tasks_lines(year, month, diary_dir)
   end
 
   local prev_lines = vim.fn.readfile(prev_path)
-  local tasks = extract_incomplete_tasks(prev_lines)
-  for _, task in ipairs(tasks) do
-    table.insert(lines, '  - [ ] ' .. task)
+  local sections = extract_incomplete_task_sections(prev_lines)
+  local untitled_tasks = {}
+  local first_untitled_section = nil
+
+  for index, section in ipairs(sections) do
+    if section.title == nil or section.title == '' then
+      if first_untitled_section == nil then
+        first_untitled_section = {
+          index = index,
+          separator = section.separator,
+        }
+      end
+      vim.list_extend(untitled_tasks, normalize_task_lines(section.tasks, 0))
+    end
   end
+
+  local untitled_emitted = false
+  for index, section in ipairs(sections) do
+    if section.title == nil or section.title == '' then
+      if not untitled_emitted and first_untitled_section ~= nil and index == first_untitled_section.index then
+        append_task_section(lines, first_untitled_section.separator, 'TAREAS MES PASADO', untitled_tasks)
+        untitled_emitted = true
+      end
+    else
+      append_task_section(lines, section.separator, section.title, section.tasks)
+    end
+  end
+
   return lines
 end
 
