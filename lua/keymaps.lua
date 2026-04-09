@@ -361,6 +361,8 @@ vim.keymap.set('n', '<leader>w<leader>5', function()
   end
 end, { desc = 'Insert monthly diary template' })
 
+require('custom.diary_sync').setup()
+
 -- Indentation maintains the highlight on the selected block
 vim.keymap.set("v", ">", ">gv", { noremap = true })
 vim.keymap.set("v", "<", "<gv", { noremap = true })
