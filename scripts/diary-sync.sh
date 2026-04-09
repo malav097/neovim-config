@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-  echo "usage: $0 <fetch|sync> </absolute/path/to/diary-file>" >&2
+  echo "usage: $0 <fetch|pull|sync> </absolute/path/to/diary-file>" >&2
   exit 64
 }
 
@@ -72,7 +72,7 @@ mode=$1
 file_path=$2
 
 case "$mode" in
-  fetch|sync) ;;
+  fetch|pull|sync) ;;
   *) usage ;;
 esac
 
@@ -146,6 +146,24 @@ update_counts
 
 if [ "$mode" = "fetch" ]; then
   emit_kv status ok
+  emit_kv ahead "$ahead"
+  emit_kv behind "$behind"
+  exit 0
+fi
+
+if [ "$mode" = "pull" ]; then
+  if [ "$behind" -gt 0 ]; then
+    if ! rebase_onto_upstream; then
+      emit_kv status conflict
+      emit_kv rebased "$rebased"
+      emit_kv ahead "$ahead"
+      emit_kv behind "$behind"
+      emit_kv message "rebase conflict while pulling diary"
+      exit 3
+    fi
+  fi
+  emit_kv status ok
+  emit_kv rebased "$rebased"
   emit_kv ahead "$ahead"
   emit_kv behind "$behind"
   exit 0

@@ -138,10 +138,20 @@ local function handle_result(request, obj)
   local pushed = result.pushed == '1'
 
   if request.mode == 'fetch' then
-    if status == 'ok' and behind > 0 and behind ~= state.last_behind then
-      notify(string.format('Hay %d commit(s) remotos nuevos para el diario; el próximo :w hará rebase y push.', behind), vim.log.levels.WARN)
+    if status == 'ok' and behind > 0 then
+      vim.schedule(function()
+        M.enqueue('pull', request.path)
+      end)
     elseif status == 'error' then
       notify(result.message or 'Falló el fetch periódico del diario.', vim.log.levels.ERROR)
+    end
+  elseif request.mode == 'pull' then
+    if status == 'conflict' then
+      notify('Conflicto al aplicar cambios remotos del diario.', vim.log.levels.ERROR)
+    elseif status == 'error' then
+      notify(result.message or 'Falló el pull del diario.', vim.log.levels.ERROR)
+    elseif rebased then
+      notify('Diario actualizado desde remoto.', vim.log.levels.INFO)
     end
   elseif status == 'conflict' then
     notify('Conflicto real al rebasear el diario. El commit local quedó guardado y el rebase fue abortado.', vim.log.levels.ERROR)
@@ -153,7 +163,7 @@ local function handle_result(request, obj)
 
   state.last_behind = behind
 
-  if request.mode == 'sync' and status == 'ok' and rebased then
+  if (request.mode == 'sync' or request.mode == 'pull') and status == 'ok' and rebased then
     run_checktime_for_target()
   end
 
@@ -189,7 +199,10 @@ function M.enqueue(mode, path)
   }
 
   if state.running then
-    if state.pending == nil or mode == 'sync' then
+    local pending_mode = state.pending and state.pending.mode
+    if state.pending == nil
+      or mode == 'sync'
+      or (mode == 'pull' and pending_mode == 'fetch') then
       state.pending = request
     end
     return
