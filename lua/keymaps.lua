@@ -93,7 +93,7 @@ local function figlet_banner_lines(text)
     return nil
   end
 
-  local out = vim.fn.systemlist({ "figlet", "-f", "banner", text })
+  local out = vim.fn.systemlist({ "figlet", "-f", "alligator", "-k", text })
   if vim.v.shell_error ~= 0 then
     return nil
   end
@@ -452,8 +452,8 @@ vim.api.nvim_create_user_command("Figlet", function(opts)
     return
   end
 
-  -- Build the command. Add flags here if you like (e.g., "-f", "slant")
-  local cmd = { "figlet", "-f", "banner", text }
+  -- Keep the ad-hoc Figlet command aligned with the diary template style.
+  local cmd = { "figlet", "-f", "alligator", "-k", text }
 
   -- Run and capture output as a list of lines
   local out = vim.fn.systemlist(cmd)
