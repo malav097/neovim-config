@@ -1,6 +1,7 @@
 local M = {}
 
-local FETCH_INTERVAL_MS = 3 * 60 * 1000
+-- Periodic fetch runs only while the current month's diary is visible in a window.
+local FETCH_INTERVAL_MS = 30 * 1000
 local EVENT_FETCH_DEBOUNCE_MS = 30 * 1000
 
 local state = {
@@ -217,6 +218,7 @@ local function maybe_fetch(force)
   end
 
   local now = vim.uv.now()
+  -- FocusGained/BufEnter fetches are debounced; timer-driven fetches use FETCH_INTERVAL_MS.
   local min_interval = force and EVENT_FETCH_DEBOUNCE_MS or FETCH_INTERVAL_MS
   if (now - state.last_fetch_started_at) < min_interval then
     return
@@ -236,6 +238,7 @@ local function refresh_timer()
     state.timer = vim.uv.new_timer()
   end
 
+  -- Keep fetching only while the current month's diary buffer is actually visible.
   if has_target_window() then
     if not state.timer_active then
       state.timer:start(
@@ -264,6 +267,7 @@ function M.setup()
   vim.api.nvim_create_autocmd('BufWritePost', {
     group = group,
     callback = function(args)
+      -- Full sync runs only on :w for the current month's diary file.
       if is_target_buffer(args.buf) then
         M.enqueue('sync', vim.api.nvim_buf_get_name(args.buf))
       end
@@ -278,6 +282,7 @@ function M.setup()
         buf = vim.api.nvim_get_current_buf()
       end
 
+      -- Event-driven fetches happen only when the current month's diary is the active buffer.
       if is_target_buffer(buf) then
         maybe_fetch(true)
       end
