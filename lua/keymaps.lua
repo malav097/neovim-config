@@ -362,6 +362,7 @@ vim.keymap.set('n', '<leader>w<leader>5', function()
 end, { desc = 'Insert monthly diary template' })
 
 require('custom.diary_sync').setup()
+require('custom.crypto_portfolio').setup()
 
 -- Indentation maintains the highlight on the selected block
 vim.keymap.set("v", ">", ">gv", { noremap = true })
@@ -473,6 +474,9 @@ end, {
   nargs = "+",  -- require at least one arg so :Figlet <text>
   range = true, -- allow replacing a selected range
 })
+
+-- :CryptoPortfolio — fetch live balances and insert tables at cursor
+vim.keymap.set('n', '<leader>cp', '<cmd>CryptoPortfolio<CR>', { desc = 'Insert crypto portfolio tables' })
 
 -- Map <leader>f to run :Figlet with user input
 vim.keymap.set("n", "<leader>07", function()
