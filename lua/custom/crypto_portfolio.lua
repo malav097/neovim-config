@@ -25,7 +25,7 @@ end
 
 local function curl_get(url, cb)
   vim.system(
-    { 'curl', '-s', '--max-time', '15', '-L', url },
+    { 'curl', '-s', '--fail', '--max-time', '15', '-L', url },
     { text = true },
     function(obj)
       vim.schedule(function()
@@ -47,7 +47,7 @@ end
 local function curl_post(url, body, cb)
   vim.system(
     {
-      'curl', '-s', '--max-time', '15',
+      'curl', '-s', '--fail', '--max-time', '15',
       '-X', 'POST',
       '-H', 'Content-Type: application/json',
       '-d', vim.json.encode(body),
@@ -71,16 +71,66 @@ local function curl_post(url, body, cb)
   )
 end
 
+local function get_json_fallback(urls, cb, idx, errors)
+  idx = idx or 1
+  errors = errors or {}
+
+  if idx > #urls then
+    cb(nil, table.concat(errors, ' | '))
+    return
+  end
+
+  curl_get(urls[idx], function(data, err)
+    if err then
+      errors[#errors + 1] = err
+      get_json_fallback(urls, cb, idx + 1, errors)
+      return
+    end
+    cb(data, nil)
+  end)
+end
+
+local function post_json_fallback(urls, body, cb, idx, errors)
+  idx = idx or 1
+  errors = errors or {}
+
+  if idx > #urls then
+    cb(nil, table.concat(errors, ' | '))
+    return
+  end
+
+  curl_post(urls[idx], body, function(data, err)
+    if err or data == nil or data.error then
+      errors[#errors + 1] = err or (data.error and data.error.message) or 'unknown RPC error'
+      post_json_fallback(urls, body, cb, idx + 1, errors)
+      return
+    end
+    cb(data, nil)
+  end)
+end
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Balance fetchers
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- BTC via Blockstream.info — no API key needed
+local BTC_API_URLS = {
+  'https://blockstream.info/api/address/',
+  'https://mempool.space/api/address/',
+}
+
+-- BTC via public explorers — no API key needed
 local function fetch_btc(address, cb)
-  curl_get('https://blockstream.info/api/address/' .. address, function(data, err)
+  local urls = {}
+  for _, base in ipairs(BTC_API_URLS) do
+    urls[#urls + 1] = base .. address
+  end
+
+  get_json_fallback(urls, function(data, err)
     if err then cb(nil, err) return end
     local funded = (data.chain_stats and data.chain_stats.funded_txo_sum) or 0
     local spent  = (data.chain_stats and data.chain_stats.spent_txo_sum)  or 0
+    funded = funded + ((data.mempool_stats and data.mempool_stats.funded_txo_sum) or 0)
+    spent = spent + ((data.mempool_stats and data.mempool_stats.spent_txo_sum) or 0)
     cb((funded - spent) / 1e8, nil)
   end)
 end
@@ -93,58 +143,99 @@ local function hex2num(hex)
   return tonumber('0x' .. hex) or 0
 end
 
-local ETH_RPC = 'https://eth.llamarpc.com'
+local ETH_RPCS = {
+  'https://eth.llamarpc.com',
+  'https://ethereum-rpc.publicnode.com',
+  'https://1rpc.io/eth',
+}
+
+local CHAIN_RPCS = {
+  ethereum = ETH_RPCS,
+  arbitrum = {
+    'https://arb1.arbitrum.io/rpc',
+    'https://arbitrum-one-rpc.publicnode.com',
+    'https://1rpc.io/arb',
+  },
+}
 
 -- ETH native balance via public JSON-RPC — no API key needed
 local function fetch_eth(address, cb)
-  curl_post(ETH_RPC, {
+  post_json_fallback(ETH_RPCS, {
     jsonrpc = '2.0', method = 'eth_getBalance',
     params = { address, 'latest' }, id = 1,
   }, function(data, err)
     if err then cb(nil, err) return end
-    if data.error then cb(nil, data.error.message) return end
     cb(hex2num(data.result) / 1e18, nil)
   end)
 end
 
 -- ERC-20 token registry
 local ERC20 = {
-  usdt = { contract = '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals = 6  },
-  usdc = { contract = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', decimals = 6  },
-  dai  = { contract = '0x6B175474E89094C44Da98b954EedeAC495271d0F', decimals = 18 },
+  usdt = {
+    decimals = 6,
+    contracts = {
+      ethereum = '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    },
+  },
+  usdc = {
+    decimals = 6,
+    contracts = {
+      ethereum = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+      arbitrum = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+    },
+  },
+  dai = {
+    decimals = 18,
+    contracts = {
+      ethereum = '0x6B175474E89094C44Da98b954EedeAC495271d0F',
+    },
+  },
 }
 
 -- Generic ERC-20 balanceOf for any contract (DeFi positions, aTokens, etc.)
-local function fetch_erc20_at(contract, decimals, address, cb)
+local function fetch_erc20_at_chain(rpcs, contract, decimals, address, cb)
   local addr_hex = address:lower():gsub('^0x', '')
   local calldata = '0x70a08231' .. string.rep('0', 64 - #addr_hex) .. addr_hex
-  curl_post(ETH_RPC, {
+  post_json_fallback(rpcs, {
     jsonrpc = '2.0', method = 'eth_call',
     params = { { to = contract, data = calldata }, 'latest' }, id = 1,
   }, function(data, err)
     if err then cb(nil, err) return end
-    if data.error then cb(nil, data.error.message) return end
     local raw = hex2num(data.result or '0x0')
     cb(raw / (10 ^ decimals), nil)
   end)
 end
 
+local function fetch_erc20_at(contract, decimals, address, cb)
+  fetch_erc20_at_chain(CHAIN_RPCS.ethereum, contract, decimals, address, cb)
+end
+
 -- ERC-20 balance via public JSON-RPC — no API key needed
-local function fetch_erc20(token_key, address, cb)
+local function fetch_erc20_on_chain(chain, token_key, address, cb)
   local tok = ERC20[token_key]
   if not tok then cb(nil, 'Unknown ERC-20 token: ' .. token_key) return end
+  local rpcs = CHAIN_RPCS[chain]
+  if not rpcs then cb(nil, 'Unknown EVM chain: ' .. tostring(chain)) return end
+  local contract = tok.contracts and tok.contracts[chain]
+  if not contract then
+    cb(nil, 'Token ' .. token_key .. ' unsupported on chain ' .. tostring(chain))
+    return
+  end
   -- balanceOf(address) selector = 0x70a08231; address padded to 32 bytes
   local addr_hex = address:lower():gsub('^0x', '')
   local calldata = '0x70a08231' .. string.rep('0', 64 - #addr_hex) .. addr_hex
-  curl_post(ETH_RPC, {
+  post_json_fallback(rpcs, {
     jsonrpc = '2.0', method = 'eth_call',
-    params = { { to = tok.contract, data = calldata }, 'latest' }, id = 1,
+    params = { { to = contract, data = calldata }, 'latest' }, id = 1,
   }, function(data, err)
     if err then cb(nil, err) return end
-    if data.error then cb(nil, data.error.message) return end
     local raw = hex2num(data.result or '0x0')
     cb(raw / (10 ^ tok.decimals), nil)
   end)
+end
+
+local function fetch_erc20(token_key, address, cb)
+  fetch_erc20_on_chain('ethereum', token_key, address, cb)
 end
 
 -- TRC-20 USDT via TronScan — no API key needed
@@ -189,94 +280,240 @@ end
 -- Table rendering
 -- ─────────────────────────────────────────────────────────────────────────────
 
+local ASSET_META = {
+  BTC = { price_id = 'bitcoin', decimals = 8, kind = 'crypto' },
+  ETH = { price_id = 'ethereum', decimals = 6, kind = 'crypto' },
+  USDT = { price_id = 'tether', decimals = 2, kind = 'stablecoin' },
+  USDC = { price_id = 'usd-coin', decimals = 2, kind = 'stablecoin' },
+  DAI = { price_id = 'dai', decimals = 2, kind = 'stablecoin' },
+}
+
 local function fmt_num(n, decimals)
   if n == nil then return 'ERR' end
   return string.format('%.' .. decimals .. 'f', n)
+end
+
+local function fmt_usd(n)
+  if n == nil then return 'N/A' end
+  return string.format('$%.2f', n)
+end
+
+local function fmt_pct(n)
+  if n == nil then return 'N/A' end
+  return string.format('%.2f%%', n)
 end
 
 local function pad(s, w)
   return s .. string.rep(' ', w - #s)
 end
 
--- Build a vim-table-mode compatible markdown table.
--- Returns: list of lines, running total (number)
-local function build_table(token_name, entries, decimals)
-  -- Column width pass
-  local w1 = math.max(#token_name, #'Total')
-  local w2 = #'Balance'
-  local total = 0
-  for _, e in ipairs(entries) do
-    w1 = math.max(w1, #e.name)
-    w2 = math.max(w2, #fmt_num(e.balance, decimals))
-    total = total + (e.balance or 0)
+local function build_markdown_table(headers, rows)
+  local widths = {}
+  for i, h in ipairs(headers) do
+    widths[i] = #h
   end
-  local total_str = fmt_num(total, decimals)
-  w2 = math.max(w2, #total_str)
+
+  for _, row in ipairs(rows) do
+    for i, cell in ipairs(row) do
+      widths[i] = math.max(widths[i], #tostring(cell))
+    end
+  end
 
   local lines = {}
-  -- Header
-  table.insert(lines, '| ' .. pad(token_name, w1) .. ' | ' .. pad('Balance', w2) .. ' |')
-  -- Separator (vim-table-mode uses plain dashes, no spaces)
-  table.insert(lines, '|' .. string.rep('-', w1 + 2) .. '|' .. string.rep('-', w2 + 2) .. '|')
-  -- Data rows
-  for _, e in ipairs(entries) do
-    local val = fmt_num(e.balance, decimals)
-    table.insert(lines, '| ' .. pad(e.name, w1) .. ' | ' .. pad(val, w2) .. ' |')
-  end
-  -- Total row
-  table.insert(lines, '| ' .. pad('Total', w1) .. ' | ' .. pad(total_str, w2) .. ' |')
-  -- vim-table-mode formula: row counting is header=1, data rows=2..N+1, total=N+2
-  -- Sum(1:-1) = sum all rows in col before the current total row
-  local total_row_idx = #entries + 2
-  table.insert(lines, '%% tmf: $' .. total_row_idx .. ',2=Sum(1:-1)')
+  local header_cells = {}
+  local sep_cells = {}
 
-  return lines, total
+  for i, h in ipairs(headers) do
+    header_cells[i] = ' ' .. pad(h, widths[i]) .. ' '
+    sep_cells[i] = string.rep('-', widths[i] + 2)
+  end
+
+  table.insert(lines, '|' .. table.concat(header_cells, '|') .. '|')
+  table.insert(lines, '|' .. table.concat(sep_cells, '|') .. '|')
+
+  for _, row in ipairs(rows) do
+    local cells = {}
+    for i, cell in ipairs(row) do
+      cells[i] = ' ' .. pad(tostring(cell), widths[i]) .. ' '
+    end
+    table.insert(lines, '|' .. table.concat(cells, '|') .. '|')
+  end
+
+  return lines
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Assemble all tables and insert into buffer
--- ─────────────────────────────────────────────────────────────────────────────
+local function append_block(lines, title, headers, rows)
+  if #rows == 0 then return end
+  table.insert(lines, '### ' .. title)
+  vim.list_extend(lines, build_markdown_table(headers, rows))
+  table.insert(lines, '')
+end
 
-local function insert_tables(bufnr, cursor_row, results)
+local function infer_aave_asset(entry)
+  if entry.asset and entry.asset ~= '' then
+    return entry.asset:upper()
+  end
+
+  local upper = entry.name:upper()
+  for asset, _ in pairs(ASSET_META) do
+    if upper:find(asset, 1, true) then
+      return asset
+    end
+  end
+
+  return 'USDC'
+end
+
+local function fetch_market_prices(cb)
+  local ids = { 'bitcoin', 'ethereum', 'tether', 'usd-coin', 'dai' }
+  local url = 'https://api.coingecko.com/api/v3/simple/price?ids=' .. table.concat(ids, ',') .. '&vs_currencies=usd'
+  curl_get(url, function(data, err)
+    if err then
+      cb({}, err)
+      return
+    end
+
+    local prices = {}
+    for symbol, meta in pairs(ASSET_META) do
+      local price = data[meta.price_id] and data[meta.price_id].usd
+      if price then
+        prices[symbol] = price
+      end
+    end
+    cb(prices, nil)
+  end)
+end
+
+local function summarize_holdings(entries, prices)
+  local holdings_rows = {}
+  local by_asset = {}
+  local by_wallet = {}
+  local total_usd = 0
+  local lending_usd = 0
+  local stablecoin_usd = 0
+
+  for _, entry in ipairs(entries) do
+    local meta = ASSET_META[entry.asset] or { decimals = 2, kind = 'crypto' }
+    local quantity = entry.balance
+    local price = prices[entry.asset]
+    local usd_value = (quantity and price) and (quantity * price) or nil
+
+    if usd_value then
+      total_usd = total_usd + usd_value
+      if entry.protocol == 'Aave V3' then
+        lending_usd = lending_usd + usd_value
+      end
+      if meta.kind == 'stablecoin' then
+        stablecoin_usd = stablecoin_usd + usd_value
+      end
+    end
+
+    holdings_rows[#holdings_rows + 1] = {
+      asset = entry.asset,
+      protocol = entry.protocol,
+      network = entry.network,
+      wallet = entry.name,
+      quantity = quantity,
+      price = price,
+      usd_value = usd_value,
+      quantity_str = fmt_num(quantity, meta.decimals),
+    }
+
+    local asset_row = by_asset[entry.asset] or { quantity = 0, usd_value = 0 }
+    asset_row.quantity = asset_row.quantity + (quantity or 0)
+    asset_row.usd_value = asset_row.usd_value + (usd_value or 0)
+    by_asset[entry.asset] = asset_row
+
+    local wallet_key = entry.name
+    local wallet_row = by_wallet[wallet_key] or {
+      wallet = entry.name,
+      positions = 0,
+      usd_value = 0,
+    }
+    wallet_row.positions = wallet_row.positions + 1
+    wallet_row.usd_value = wallet_row.usd_value + (usd_value or 0)
+    by_wallet[wallet_key] = wallet_row
+  end
+
+  table.sort(holdings_rows, function(a, b)
+    return (a.usd_value or -1) > (b.usd_value or -1)
+  end)
+
+  local asset_rows = {}
+  for asset, row in pairs(by_asset) do
+    asset_rows[#asset_rows + 1] = {
+      asset,
+      fmt_num(row.quantity, (ASSET_META[asset] and ASSET_META[asset].decimals) or 2),
+      fmt_usd(row.usd_value),
+      fmt_pct(total_usd > 0 and (row.usd_value / total_usd * 100) or nil),
+    }
+  end
+  table.sort(asset_rows, function(a, b)
+    local av = tonumber((a[3]:gsub('[%$,]', ''))) or -1
+    local bv = tonumber((b[3]:gsub('[%$,]', ''))) or -1
+    return av > bv
+  end)
+
+  local wallet_rows = {}
+  for _, row in pairs(by_wallet) do
+    wallet_rows[#wallet_rows + 1] = {
+      row.wallet,
+      tostring(row.positions),
+      fmt_usd(row.usd_value),
+    }
+  end
+  table.sort(wallet_rows, function(a, b)
+    local av = tonumber((a[3]:gsub('[%$,]', ''))) or -1
+    local bv = tonumber((b[3]:gsub('[%$,]', ''))) or -1
+    return av > bv
+  end)
+
+  local overview_rows = {
+    { 'Total Portfolio', fmt_usd(total_usd) },
+    { 'Stablecoins', fmt_usd(stablecoin_usd) },
+    { 'Lending (Aave)', fmt_usd(lending_usd) },
+    { 'Non-Stable Assets', fmt_usd(total_usd - stablecoin_usd) },
+  }
+
+  local holdings_table_rows = {}
+  for _, row in ipairs(holdings_rows) do
+    holdings_table_rows[#holdings_table_rows + 1] = {
+      row.asset,
+      row.protocol,
+      row.network,
+      row.wallet,
+      row.quantity_str,
+      fmt_usd(row.price),
+      fmt_usd(row.usd_value),
+      fmt_pct(total_usd > 0 and row.usd_value and (row.usd_value / total_usd * 100) or nil),
+    }
+  end
+
+  holdings_table_rows[#holdings_table_rows + 1] = {
+    'TOTAL', '', '', '',
+    '',
+    '',
+    fmt_usd(total_usd),
+    '100.00%',
+  }
+
+  return overview_rows, holdings_table_rows, asset_rows, wallet_rows
+end
+
+local function insert_tables(bufnr, cursor_row, entries, prices)
   local lines = {}
-  local stablecoins = {}
 
-  local function add_block(name, entries, decimals)
-    if #entries == 0 then return nil end
-    local tbl, total = build_table(name, entries, decimals)
-    vim.list_extend(lines, tbl)
-    table.insert(lines, '')
-    return total
-  end
-
-  add_block('BTC', results.btc, 8)
-  add_block('ETH', results.eth, 6)
-  add_block('Aave V3', results.aave, 2)
-
-  local usdt_total = add_block('USDT', results.usdt, 2)
-  if usdt_total then
-    table.insert(stablecoins, { name = 'USDT', balance = usdt_total })
-  end
-
-  local usdc_total = add_block('USDC', results.usdc, 2)
-  if usdc_total then
-    table.insert(stablecoins, { name = 'USDC', balance = usdc_total })
-  end
-
-  local dai_total = add_block('DAI', results.dai, 2)
-  if dai_total then
-    table.insert(stablecoins, { name = 'DAI', balance = dai_total })
-  end
-
-  -- Stablecoins summary only when there are 2+ stable assets
-  if #stablecoins >= 2 then
-    add_block('Stablecoins', stablecoins, 2)
-  end
-
-  if #lines == 0 then
+  if #entries == 0 then
     vim.notify('No wallet data to display.', vim.log.levels.WARN, { title = 'CryptoPortfolio' })
     return
   end
+
+  local overview_rows, holdings_rows, asset_rows, wallet_rows = summarize_holdings(entries, prices)
+
+  append_block(lines, 'Portfolio Overview', { 'Metric', 'Value' }, overview_rows)
+  append_block(lines, 'Holdings', { 'Asset', 'Protocol', 'Network', 'Wallet', 'Quantity', 'Price USD', 'Value USD', 'Allocation' }, holdings_rows)
+  append_block(lines, 'By Asset', { 'Asset', 'Quantity', 'Value USD', 'Allocation' }, asset_rows)
+  append_block(lines, 'By Wallet', { 'Wallet', 'Positions', 'Value USD' }, wallet_rows)
 
   vim.api.nvim_buf_set_lines(bufnr, cursor_row, cursor_row, false, lines)
   vim.notify(
@@ -300,33 +537,46 @@ function M.generate()
   local bufnr      = vim.api.nvim_get_current_buf()
   local cursor_row = vim.api.nvim_win_get_cursor(0)[1]
 
-  local results = { btc = {}, eth = {}, usdt = {}, usdc = {}, dai = {}, aave = {} }
+  local entries = {}
   local pending = 0
+
+  local function finalize()
+    fetch_market_prices(function(prices, perr)
+      if perr then
+        vim.notify(
+          'Price feed unavailable: ' .. perr,
+          vim.log.levels.WARN,
+          { title = 'CryptoPortfolio' }
+        )
+      end
+      insert_tables(bufnr, cursor_row, entries, prices or {})
+    end)
+  end
 
   local function dec()
     pending = pending - 1
     if pending == 0 then
-      insert_tables(bufnr, cursor_row, results)
+      finalize()
     end
   end
 
   -- Allocates a slot (preserves config order even with async responses),
   -- then dispatches the fetcher.  Extra args are passed before the callback.
-  local function queue(bucket, name, fetcher, ...)
-    local idx = #results[bucket] + 1
-    results[bucket][idx] = { name = name, balance = nil }
+  local function queue(entry, fetcher, ...)
+    local idx = #entries + 1
+    entries[idx] = vim.tbl_extend('force', entry, { balance = nil })
     pending = pending + 1
 
     local extra = { ... }
     extra[#extra + 1] = function(bal, ferr)
       if ferr then
         vim.notify(
-          bucket:upper() .. ' "' .. name .. '": ' .. ferr,
+          entry.asset .. ' "' .. entry.name .. '": ' .. ferr,
           vim.log.levels.WARN,
           { title = 'CryptoPortfolio' }
         )
       end
-      results[bucket][idx].balance = bal
+      entries[idx].balance = bal
       dec()
     end
 
@@ -335,42 +585,101 @@ function M.generate()
 
   -- BTC wallets
   for _, w in ipairs(cfg.btc or {}) do
-    queue('btc', w.name, fetch_btc, w.address)
+    queue({
+      name = w.name,
+      asset = 'BTC',
+      protocol = 'Wallet',
+      network = 'Bitcoin',
+      address = w.address,
+    }, fetch_btc, w.address)
   end
 
   -- ETH wallets
   for _, w in ipairs(cfg.eth or {}) do
-    queue('eth', w.name, fetch_eth, w.address)
+    queue({
+      name = w.name,
+      asset = 'ETH',
+      protocol = 'Wallet',
+      network = 'Ethereum',
+      address = w.address,
+    }, fetch_eth, w.address)
   end
 
   -- USDT — ERC-20 (Ethereum)
   for _, w in ipairs(cfg.usdt_erc20 or {}) do
-    queue('usdt', w.name, fetch_erc20, 'usdt', w.address)
+    queue({
+      name = w.name,
+      asset = 'USDT',
+      protocol = 'Wallet',
+      network = 'Ethereum',
+      address = w.address,
+    }, fetch_erc20, 'usdt', w.address)
   end
 
   -- USDT — TRC-20 (Tron)
   for _, w in ipairs(cfg.usdt_trc20 or {}) do
-    queue('usdt', w.name, fetch_trc20_usdt, w.address)
+    queue({
+      name = w.name,
+      asset = 'USDT',
+      protocol = 'Wallet',
+      network = 'Tron',
+      address = w.address,
+    }, fetch_trc20_usdt, w.address)
   end
 
   -- USDC — ERC-20 (Ethereum)
   for _, w in ipairs(cfg.usdc_erc20 or {}) do
-    queue('usdc', w.name, fetch_erc20, 'usdc', w.address)
+    queue({
+      name = w.name,
+      asset = 'USDC',
+      protocol = 'Wallet',
+      network = 'Ethereum',
+      address = w.address,
+    }, fetch_erc20, 'usdc', w.address)
+  end
+
+  -- USDC — Arbitrum
+  for _, w in ipairs(cfg.usdc_arbitrum or {}) do
+    queue({
+      name = w.name,
+      asset = 'USDC',
+      protocol = 'Wallet',
+      network = 'Arbitrum',
+      address = w.address,
+    }, fetch_erc20_on_chain, 'arbitrum', 'usdc', w.address)
   end
 
   -- USDC — TRC-20 (Tron)
   for _, w in ipairs(cfg.usdc_trc20 or {}) do
-    queue('usdc', w.name, fetch_trc20_usdc, w.address)
+    queue({
+      name = w.name,
+      asset = 'USDC',
+      protocol = 'Wallet',
+      network = 'Tron',
+      address = w.address,
+    }, fetch_trc20_usdc, w.address)
   end
 
   -- DAI — ERC-20
   for _, w in ipairs(cfg.dai_erc20 or {}) do
-    queue('dai', w.name, fetch_erc20, 'dai', w.address)
+    queue({
+      name = w.name,
+      asset = 'DAI',
+      protocol = 'Wallet',
+      network = 'Ethereum',
+      address = w.address,
+    }, fetch_erc20, 'dai', w.address)
   end
 
   -- Aave V3 lending positions (aToken balanceOf = principal + accrued interest)
   for _, w in ipairs(cfg.aave_v3 or {}) do
-    queue('aave', w.name, fetch_erc20_at, w.token, w.decimals or 6, w.address)
+    queue({
+      name = w.name,
+      asset = infer_aave_asset(w),
+      protocol = 'Aave V3',
+      network = 'Ethereum',
+      address = w.address,
+    }, fetch_erc20_at, w.token, w.decimals or 6, w.address)
   end
 
   if pending == 0 then
