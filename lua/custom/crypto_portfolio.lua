@@ -298,6 +298,11 @@ local function fmt_usd(n)
   return string.format('$%.2f', n)
 end
 
+local function fmt_usd_raw(n)
+  if n == nil then return '' end
+  return string.format('%.2f', n)
+end
+
 local function fmt_pct(n)
   if n == nil then return 'N/A' end
   return string.format('%.2f%%', n)
@@ -342,11 +347,37 @@ local function build_markdown_table(headers, rows)
   return lines
 end
 
-local function append_block(lines, title, headers, rows)
-  if #rows == 0 then return end
+local function formula_comment_prefix()
+  local cstring = vim.bo.commentstring or ''
+  if cstring == '' or not cstring:find('%%s', 1, true) then
+    return '%%'
+  end
+
+  local start = cstring:match('^(.*)%%s') or ''
+  start = start:gsub('%s+$', '')
+  if start == '' then
+    return '%%'
+  end
+  return start
+end
+
+local function build_table_mode_block(title, headers, rows, total_row, total_col)
+  local lines = {}
   table.insert(lines, '### ' .. title)
-  vim.list_extend(lines, build_markdown_table(headers, rows))
+  local table_rows = vim.deepcopy(rows)
+
+  if total_row then
+    table_rows[#table_rows + 1] = total_row
+  end
+
+  vim.list_extend(lines, build_markdown_table(headers, table_rows))
+
+  if total_row and total_col then
+    table.insert(lines, formula_comment_prefix() .. ' tmf: $-1,' .. total_col .. '=Sum(1:-1)')
+  end
+
   table.insert(lines, '')
+  return lines
 end
 
 local function infer_aave_asset(entry)
@@ -442,37 +473,29 @@ local function summarize_holdings(entries, prices)
   local asset_rows = {}
   for asset, row in pairs(by_asset) do
     asset_rows[#asset_rows + 1] = {
-      asset,
-      fmt_num(row.quantity, (ASSET_META[asset] and ASSET_META[asset].decimals) or 2),
-      fmt_usd(row.usd_value),
-      fmt_pct(total_usd > 0 and (row.usd_value / total_usd * 100) or nil),
+      asset = asset,
+      quantity = row.quantity,
+      usd_value = row.usd_value,
+      allocation = total_usd > 0 and (row.usd_value / total_usd * 100) or nil,
     }
   end
   table.sort(asset_rows, function(a, b)
-    local av = tonumber((a[3]:gsub('[%$,]', ''))) or -1
-    local bv = tonumber((b[3]:gsub('[%$,]', ''))) or -1
-    return av > bv
+    return (a.usd_value or -1) > (b.usd_value or -1)
   end)
 
   local wallet_rows = {}
   for _, row in pairs(by_wallet) do
-    wallet_rows[#wallet_rows + 1] = {
-      row.wallet,
-      tostring(row.positions),
-      fmt_usd(row.usd_value),
-    }
+    wallet_rows[#wallet_rows + 1] = row
   end
   table.sort(wallet_rows, function(a, b)
-    local av = tonumber((a[3]:gsub('[%$,]', ''))) or -1
-    local bv = tonumber((b[3]:gsub('[%$,]', ''))) or -1
-    return av > bv
+    return (a.usd_value or -1) > (b.usd_value or -1)
   end)
 
   local overview_rows = {
-    { 'Total Portfolio', fmt_usd(total_usd) },
-    { 'Stablecoins', fmt_usd(stablecoin_usd) },
-    { 'Lending (Aave)', fmt_usd(lending_usd) },
-    { 'Non-Stable Assets', fmt_usd(total_usd - stablecoin_usd) },
+    { 'total portfolio', fmt_usd_raw(total_usd) },
+    { 'stablecoins', fmt_usd_raw(stablecoin_usd) },
+    { 'lending (aave)', fmt_usd_raw(lending_usd) },
+    { 'non-stable assets', fmt_usd_raw(total_usd - stablecoin_usd) },
   }
 
   local holdings_table_rows = {}
@@ -483,21 +506,13 @@ local function summarize_holdings(entries, prices)
       row.network,
       row.wallet,
       row.quantity_str,
-      fmt_usd(row.price),
-      fmt_usd(row.usd_value),
+      fmt_usd_raw(row.price),
+      fmt_usd_raw(row.usd_value),
       fmt_pct(total_usd > 0 and row.usd_value and (row.usd_value / total_usd * 100) or nil),
     }
   end
 
-  holdings_table_rows[#holdings_table_rows + 1] = {
-    'TOTAL', '', '', '',
-    '',
-    '',
-    fmt_usd(total_usd),
-    '100.00%',
-  }
-
-  return overview_rows, holdings_table_rows, asset_rows, wallet_rows
+  return overview_rows, holdings_table_rows, asset_rows, wallet_rows, total_usd
 end
 
 local function insert_tables(bufnr, cursor_row, entries, prices)
@@ -508,12 +523,54 @@ local function insert_tables(bufnr, cursor_row, entries, prices)
     return
   end
 
-  local overview_rows, holdings_rows, asset_rows, wallet_rows = summarize_holdings(entries, prices)
+  local overview_rows, holdings_rows, asset_rows, wallet_rows, total_usd = summarize_holdings(entries, prices)
 
-  append_block(lines, 'Portfolio Overview', { 'Metric', 'Value' }, overview_rows)
-  append_block(lines, 'Holdings', { 'Asset', 'Protocol', 'Network', 'Wallet', 'Quantity', 'Price USD', 'Value USD', 'Allocation' }, holdings_rows)
-  append_block(lines, 'By Asset', { 'Asset', 'Quantity', 'Value USD', 'Allocation' }, asset_rows)
-  append_block(lines, 'By Wallet', { 'Wallet', 'Positions', 'Value USD' }, wallet_rows)
+  vim.list_extend(lines, build_table_mode_block(
+    'Portfolio Overview',
+    { 'metric', 'value_usd' },
+    overview_rows
+  ))
+
+  vim.list_extend(lines, build_table_mode_block(
+    'Holdings',
+    { 'asset', 'protocol', 'network', 'wallet', 'quantity', 'price_usd', 'value_usd', 'allocation' },
+    holdings_rows,
+    { 'total', '', '', '', '', '', fmt_usd_raw(total_usd), '100.00%' },
+    7
+  ))
+
+  local by_asset_rows = {}
+  for _, row in ipairs(asset_rows) do
+    by_asset_rows[#by_asset_rows + 1] = {
+      row.asset:lower(),
+      fmt_num(row.quantity, (ASSET_META[row.asset] and ASSET_META[row.asset].decimals) or 2),
+      fmt_usd_raw(row.usd_value),
+      fmt_pct(row.allocation),
+    }
+  end
+  vim.list_extend(lines, build_table_mode_block(
+    'By Asset',
+    { 'asset', 'quantity', 'value_usd', 'allocation' },
+    by_asset_rows,
+    { 'total', '', fmt_usd_raw(total_usd), '100.00%' },
+    3
+  ))
+
+  local by_wallet_rows = {}
+  for _, row in ipairs(wallet_rows) do
+    by_wallet_rows[#by_wallet_rows + 1] = {
+      row.wallet,
+      tostring(row.positions),
+      fmt_usd_raw(row.usd_value),
+    }
+  end
+  vim.list_extend(lines, build_table_mode_block(
+    'By Wallet',
+    { 'wallet', 'positions', 'value_usd' },
+    by_wallet_rows,
+    { 'total', '', fmt_usd_raw(total_usd) },
+    3
+  ))
 
   vim.api.nvim_buf_set_lines(bufnr, cursor_row, cursor_row, false, lines)
   vim.notify(
