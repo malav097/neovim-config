@@ -39,6 +39,7 @@ local function script_path()
   return normalize_path(vim.fn.stdpath('config') .. '/scripts/diary-sync.sh')
 end
 
+
 local function parse_output(text)
   local result = {}
   if text == nil or text == '' then
@@ -97,6 +98,15 @@ local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = 'Diary Sync' })
 end
 
+local function notify_error_full(message, raw_output)
+  local lines = { { 'Diary Sync: ' .. message, 'ErrorMsg' } }
+  local trimmed = (raw_output or ''):gsub('^%s+', ''):gsub('%s+$', '')
+  if trimmed ~= '' then
+    table.insert(lines, { '\n' .. trimmed, 'WarningMsg' })
+  end
+  vim.api.nvim_echo(lines, true, {})
+end
+
 local function notify_async(message, level, delay_ms)
   vim.defer_fn(function()
     notify(message, level)
@@ -144,20 +154,22 @@ local function handle_result(request, obj)
         M.enqueue('pull', request.path)
       end)
     elseif status == 'error' then
-      notify(result.message or 'Falló el fetch periódico del diario.', vim.log.levels.ERROR)
+      notify_error_full(result.message or 'Falló el fetch periódico del diario.', output)
     end
   elseif request.mode == 'pull' then
     if status == 'conflict' then
-      notify('Conflicto al aplicar cambios remotos del diario.', vim.log.levels.ERROR)
+      notify_error_full('Conflicto al aplicar cambios remotos del diario.', output)
     elseif status == 'error' then
-      notify(result.message or 'Falló el pull del diario.', vim.log.levels.ERROR)
+      notify_error_full(result.message or 'Falló el pull del diario.', output)
     elseif rebased then
       notify('Diario actualizado desde remoto.', vim.log.levels.INFO)
     end
+  elseif status == 'busy' then
+    -- Another diary-sync process is running (or a stale lock exists); skip silently.
   elseif status == 'conflict' then
-    notify('Conflicto real al rebasear el diario. El commit local quedó guardado y el rebase fue abortado.', vim.log.levels.ERROR)
+    notify_error_full('Conflicto real al rebasear el diario. El commit local quedó guardado y el rebase fue abortado.', output)
   elseif status == 'error' then
-    notify(result.message or 'Falló el autosync del diario.', vim.log.levels.ERROR)
+    notify_error_full(result.message or 'Falló el autosync del diario.', output)
   elseif request.mode == 'sync' and (status == 'ok' or status == 'noop') then
     notify(sync_success_message(result), vim.log.levels.INFO)
   end
@@ -181,7 +193,7 @@ local function start_request(mode, path)
   if mode == 'sync' then
     notify_async('Ejecutando sync del diario...', vim.log.levels.INFO, 10)
   end
-  vim.system({ script_path(), mode, path }, { text = true }, function(obj)
+  vim.system({ script_path(), mode, path }, { text = true, timeout = 60000 }, function(obj)
     vim.schedule(function()
       handle_result({ mode = mode, path = path }, obj)
     end)
