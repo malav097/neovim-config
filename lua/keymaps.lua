@@ -337,7 +337,7 @@ local function monthly_template_lines()
     '  - [ ] lavar ropa',
     '  - [ ] pagar internet mama',
     '  - [ ] pagar internet mio',
-    '  - [ ] manda invoice',
+    '  - [ ] manda invoice - fecha de arriba mes actual, due date mes siguiente',
     '  - [ ] pagar estacionamiento',
     '  - [ ] pagar renta y expensas',
     '  - [ ] pagar tuenti',
