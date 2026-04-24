@@ -336,10 +336,11 @@ local function monthly_template_lines()
     '  - [ ] regar plantas',
     '  - [ ] lavar ropa',
     '  - [ ] pagar internet mama',
-    '  - [ ] pagar internet mio',
+    '  - [ ] pagar internet personal',
+    '  - [ ] pagar luz',
+    '  - [ ] pagar renta',
     '  - [ ] manda invoice - fecha de arriba mes actual, due date mes siguiente',
     '  - [ ] pagar estacionamiento',
-    '  - [ ] pagar renta y expensas',
     '  - [ ] pagar tuenti',
     '  - [ ] pagar seguro hilux',
   })
