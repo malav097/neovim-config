@@ -513,24 +513,88 @@ end
 
 local function workspace_row_major_windows()
   local windows = vim.api.nvim_tabpage_list_wins(0)
-  local same_row_tolerance = 1
 
   table.sort(windows, function(a, b)
     local row_a, col_a = unpack(vim.api.nvim_win_get_position(a))
     local row_b, col_b = unpack(vim.api.nvim_win_get_position(b))
+    local center_row_a = row_a + (vim.api.nvim_win_get_height(a) / 2)
+    local center_row_b = row_b + (vim.api.nvim_win_get_height(b) / 2)
 
-    if math.abs(row_a - row_b) <= same_row_tolerance then
+    if math.abs(center_row_a - center_row_b) <= 1 then
       return col_a < col_b
     end
 
-    return row_a < row_b
+    return center_row_a < center_row_b
   end)
 
   return windows
 end
 
+local function workspace_focus_ordered_windows()
+  local windows = vim.api.nvim_tabpage_list_wins(0)
+
+  if #windows == 3 then
+    table.sort(windows, function(a, b)
+      local _, col_a = unpack(vim.api.nvim_win_get_position(a))
+      local _, col_b = unpack(vim.api.nvim_win_get_position(b))
+      local center_col_a = col_a + (vim.api.nvim_win_get_width(a) / 2)
+      local center_col_b = col_b + (vim.api.nvim_win_get_width(b) / 2)
+      return center_col_a < center_col_b
+    end)
+    return windows
+  end
+
+  if #windows == 4 then
+    local decorated = {}
+    local total_center_row = 0
+    local total_center_col = 0
+
+    for _, win in ipairs(windows) do
+      local row, col = unpack(vim.api.nvim_win_get_position(win))
+      local center_row = row + (vim.api.nvim_win_get_height(win) / 2)
+      local center_col = col + (vim.api.nvim_win_get_width(win) / 2)
+      total_center_row = total_center_row + center_row
+      total_center_col = total_center_col + center_col
+      table.insert(decorated, {
+        win = win,
+        center_row = center_row,
+        center_col = center_col,
+      })
+    end
+
+    local mid_row = total_center_row / #decorated
+    local mid_col = total_center_col / #decorated
+    local ordered = { nil, nil, nil, nil }
+
+    for _, item in ipairs(decorated) do
+      local is_top = item.center_row < mid_row
+      local is_left = item.center_col < mid_col
+
+      if is_top and is_left then
+        ordered[1] = item.win
+      elseif is_top and not is_left then
+        ordered[2] = item.win
+      elseif not is_top and is_left then
+        ordered[3] = item.win
+      else
+        ordered[4] = item.win
+      end
+    end
+
+    local compact = {}
+    for _, win in ipairs(ordered) do
+      if win ~= nil then
+        table.insert(compact, win)
+      end
+    end
+    return compact
+  end
+
+  return workspace_row_major_windows()
+end
+
 local function workspace_focus_window(index)
-  local windows = workspace_row_major_windows()
+  local windows = workspace_focus_ordered_windows()
   local target = windows[index]
 
   if target == nil or not vim.api.nvim_win_is_valid(target) then
@@ -612,6 +676,16 @@ local function workspace_tmux_socket_path()
   local dir = vim.fn.stdpath("state") .. "/workspace-tmux"
   vim.fn.mkdir(dir, "p")
   return dir .. "/workspace-init.sock"
+end
+
+local function workspace_tmux_debug_log(message)
+  local log_path = vim.fn.stdpath("state") .. "/workspace-tmux/debug.log"
+  local line = string.format(
+    "[%s] %s",
+    os.date("%Y-%m-%d %H:%M:%S"),
+    tostring(message)
+  )
+  vim.fn.writefile({ line }, log_path, "a")
 end
 
 local function workspace_run_tmux(socket_path, args)
@@ -732,6 +806,94 @@ local function workspace_prepare_tmux(socket_path, workspace_name, pane_count)
   return session_names
 end
 
+local function workspace_current_tmux_target()
+  local buf = vim.api.nvim_get_current_buf()
+  workspace_tmux_debug_log(string.format("resolve:start buf=%s name=%s buftype=%s", buf, vim.api.nvim_buf_get_name(buf), vim.bo[buf].buftype))
+  if vim.bo[buf].buftype ~= "terminal" then
+    workspace_tmux_debug_log("resolve:skip non-terminal")
+    return nil, nil
+  end
+
+  local ok_socket, socket_path = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_socket_path")
+  local ok_session, session_name = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_session_name")
+  if ok_socket and ok_session then
+    if type(socket_path) == "string" and socket_path ~= "" and type(session_name) == "string" and session_name ~= "" then
+      workspace_tmux_debug_log(string.format("resolve:bufvars socket=%s session=%s", socket_path, session_name))
+      return socket_path, session_name
+    end
+  end
+
+  local ok_pid, job_pid = pcall(vim.api.nvim_buf_get_var, buf, "terminal_job_pid")
+  workspace_tmux_debug_log(string.format("resolve:jobpid ok=%s pid=%s", tostring(ok_pid), tostring(job_pid)))
+  if ok_pid and type(job_pid) == "number" then
+    local socket_guess = workspace_tmux_socket_path()
+    local client_lines = vim.fn.systemlist({
+      "tmux",
+      "-S",
+      socket_guess,
+      "list-clients",
+      "-F",
+      "#{client_pid}\t#{client_session}\t#{client_tty}",
+    })
+    workspace_tmux_debug_log(string.format("resolve:client_pid shell_error=%s lines=%s", vim.v.shell_error, table.concat(client_lines, " | ")))
+    if vim.v.shell_error == 0 then
+      for _, line in ipairs(client_lines) do
+        local client_pid, client_session = line:match("^(%d+)\t(%S+)\t")
+        if tonumber(client_pid) == job_pid and client_session ~= nil then
+          workspace_tmux_debug_log(string.format("resolve:client_pid_match socket=%s session=%s", socket_guess, client_session))
+          return socket_guess, client_session
+        end
+      end
+    end
+
+    local tty_name = vim.fn.systemlist({ "ps", "-o", "tty=", "-p", tostring(job_pid) })[1]
+    workspace_tmux_debug_log(string.format("resolve:tty shell_error=%s tty=%s", vim.v.shell_error, tostring(tty_name)))
+    if vim.v.shell_error == 0 and tty_name ~= nil and tty_name ~= "" and tty_name ~= "?" then
+      tty_name = tty_name:gsub("^%s+", ""):gsub("%s+$", "")
+      local tty_path = tty_name:match("^/dev/") and tty_name or ("/dev/" .. tty_name)
+      client_lines = vim.fn.systemlist({
+        "tmux",
+        "-S",
+        socket_guess,
+        "list-clients",
+        "-F",
+        "#{client_tty}\t#{client_session}",
+      })
+      workspace_tmux_debug_log(string.format("resolve:client_tty shell_error=%s lines=%s", vim.v.shell_error, table.concat(client_lines, " | ")))
+      if vim.v.shell_error == 0 then
+        for _, line in ipairs(client_lines) do
+          local client_tty, client_session = line:match("^(%S+)\t(%S+)$")
+          if client_tty == tty_path and client_session ~= nil then
+            workspace_tmux_debug_log(string.format("resolve:client_tty_match socket=%s session=%s", socket_guess, client_session))
+            return socket_guess, client_session
+          end
+        end
+      end
+    end
+  end
+
+  workspace_tmux_debug_log("resolve:failed")
+  return nil, nil
+end
+
+local function workspace_tmux_command_for_current_buffer(args)
+  local socket_path, session_name = workspace_current_tmux_target()
+  if socket_path == nil or session_name == nil then
+    workspace_tmux_debug_log("command:resolve_failed")
+    vim.notify("Current buffer is not a workspace tmux terminal", vim.log.levels.WARN)
+    return
+  end
+
+  local cmd = { "tmux", "-S", socket_path }
+  vim.list_extend(cmd, args(session_name))
+  workspace_tmux_debug_log(string.format("command:run %s", table.concat(cmd, " ")))
+  local out = vim.fn.system(cmd)
+  workspace_tmux_debug_log(string.format("command:result shell_error=%s out=%s", vim.v.shell_error, tostring(out)))
+  if vim.v.shell_error ~= 0 then
+    vim.notify("tmux command failed", vim.log.levels.ERROR)
+  end
+end
+
 local function workspace_open_tmux_terminal_here(socket_path, session_name)
   vim.cmd("enew")
   vim.fn.termopen({ "tmux", "-S", socket_path, "attach-session", "-t", session_name })
@@ -802,6 +964,24 @@ end, { desc = "Open 4-pane tmux workspace" })
 vim.keymap.set("n", "<leader>a3", function()
   vim.cmd("WorkspaceInit3")
 end, { desc = "Open 3-pane tmux workspace" })
+
+vim.keymap.set("n", "<leader>tn", function()
+  workspace_tmux_command_for_current_buffer(function(session_name)
+    return { "next-window", "-t", session_name }
+  end)
+end, { desc = "tmux next window for current workspace terminal" })
+
+vim.keymap.set("n", "<leader>tp", function()
+  workspace_tmux_command_for_current_buffer(function(session_name)
+    return { "previous-window", "-t", session_name }
+  end)
+end, { desc = "tmux previous window for current workspace terminal" })
+
+vim.keymap.set("n", "<leader>t[", function()
+  workspace_tmux_command_for_current_buffer(function(session_name)
+    return { "copy-mode", "-t", session_name }
+  end)
+end, { desc = "tmux copy mode for current workspace terminal" })
 
 vim.keymap.set("n", "<leader>a0", function()
   workspace_zoom_current_window()
