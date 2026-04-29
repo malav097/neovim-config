@@ -56,7 +56,6 @@ vim.schedule(function()
       nnoremap <leader>aj :wincmd j<CR>
       nnoremap <leader>ah :wincmd h<CR>
       nnoremap <leader>al :wincmd l<CR>
-      nnoremap <leader>a0 <C-W><C-o>
       nnoremap <leader>av <cmd>vertical split<cr>
       nnoremap <leader>as <cmd>split<cr>
       tnoremap <leader><Esc> <C-\><C-n>j:
@@ -369,7 +368,53 @@ require('custom.crypto_portfolio').setup()
 vim.keymap.set("v", ">", ">gv", { noremap = true })
 vim.keymap.set("v", "<", "<gv", { noremap = true })
 -- nvimtree leade e
-vim.keymap.set("n", "<leader>e", "<cmd>NvimTreeFindFileToggle<CR>", { noremap = true, silent = true })
+vim.keymap.set("n", "<leader>e", function()
+  local api = require("nvim-tree.api")
+  local file_path = vim.api.nvim_buf_get_name(0)
+  local dir_path = nil
+
+  if file_path ~= "" and vim.fn.filereadable(file_path) == 1 then
+    dir_path = vim.fn.fnamemodify(file_path, ":p:h")
+  end
+
+  if dir_path ~= nil then
+    api.tree.toggle({
+      path = dir_path,
+      find_file = true,
+      focus = true,
+    })
+  else
+    api.tree.toggle({
+      find_file = true,
+      focus = true,
+    })
+  end
+end, { noremap = true, silent = true })
+
+vim.api.nvim_create_autocmd("BufEnter", {
+  desc = "Keep nvim-tree rooted to the current file directory when visible",
+  group = vim.api.nvim_create_augroup("workspace-nvimtree-follow-file", { clear = true }),
+  callback = function(args)
+    local ok_api, api = pcall(require, "nvim-tree.api")
+    local ok_view, view = pcall(require, "nvim-tree.view")
+    if not ok_api or not ok_view or not view.is_visible() then
+      return
+    end
+
+    local file_path = vim.api.nvim_buf_get_name(args.buf)
+    if file_path == "" or vim.fn.filereadable(file_path) ~= 1 then
+      return
+    end
+
+    local dir_path = vim.fn.fnamemodify(file_path, ":p:h")
+    api.tree.change_root(dir_path)
+    api.tree.find_file({
+      buf = args.buf,
+      open = false,
+      focus = false,
+    })
+  end,
+})
 -- delete highligt in to void registry
 vim.keymap.set("x", "<leader>p", "\"_dP")
 -- leader z to write and quit all
@@ -468,12 +513,13 @@ end
 
 local function workspace_row_major_windows()
   local windows = vim.api.nvim_tabpage_list_wins(0)
+  local same_row_tolerance = 1
 
   table.sort(windows, function(a, b)
     local row_a, col_a = unpack(vim.api.nvim_win_get_position(a))
     local row_b, col_b = unpack(vim.api.nvim_win_get_position(b))
 
-    if row_a == row_b then
+    if math.abs(row_a - row_b) <= same_row_tolerance then
       return col_a < col_b
     end
 
@@ -494,14 +540,39 @@ local function workspace_focus_window(index)
   vim.api.nvim_set_current_win(target)
 end
 
-local function workspace_open_terminal_here()
-  vim.cmd("terminal")
+local workspace_build_layout_01
+local workspace_build_layout_02
+
+local function workspace_zoom_current_window()
+  if vim.t.workspace_zoom_parent_tab ~= nil then
+    return
+  end
+
+  local parent_tab = vim.api.nvim_get_current_tabpage()
+  vim.cmd("tab split")
+  vim.t.workspace_zoom_parent_tab = parent_tab
+end
+
+local function workspace_close_zoom_tab()
+  local parent_tab = vim.t.workspace_zoom_parent_tab
+  if parent_tab == nil then
+    vim.notify("Current tab is not a workspace zoom tab", vim.log.levels.WARN)
+    return
+  end
+
+  vim.cmd("tabclose")
+end
+
+local function workspace_open_empty_buffer_here()
+  local buf = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_win_set_buf(0, buf)
   vim.wo.winfixheight = false
   vim.wo.winfixwidth = false
 end
 
-local function workspace_fill_windows(target_buffers)
-  local windows = workspace_sorted_windows()
+local function workspace_fill_windows(target_buffers, opts)
+  opts = opts or {}
+  local windows = workspace_row_major_windows()
 
   for index, win in ipairs(windows) do
     vim.api.nvim_set_current_win(win)
@@ -512,7 +583,9 @@ local function workspace_fill_windows(target_buffers)
     if buf ~= nil and vim.api.nvim_buf_is_valid(buf) then
       vim.api.nvim_win_set_buf(win, buf)
     else
-      workspace_open_terminal_here()
+      if opts.open_empty_when_missing then
+        workspace_open_empty_buffer_here()
+      end
     end
   end
 
@@ -520,7 +593,7 @@ local function workspace_fill_windows(target_buffers)
   vim.cmd("startinsert")
 end
 
-local function workspace_build_layout_01()
+workspace_build_layout_01 = function()
   vim.cmd("only")
   vim.cmd("vsplit")
   vim.cmd("wincmd h")
@@ -529,7 +602,7 @@ local function workspace_build_layout_01()
   vim.cmd("split")
 end
 
-local function workspace_build_layout_02()
+workspace_build_layout_02 = function()
   vim.cmd("only")
   vim.cmd("vsplit")
   vim.cmd("vsplit")
@@ -563,71 +636,139 @@ local function workspace_tmux_session_exists(socket_path, session_name)
   return vim.v.shell_error == 0
 end
 
+local function workspace_tmux_list_sessions(socket_path)
+  local cmd = {
+    "tmux",
+    "-S",
+    socket_path,
+    "list-sessions",
+    "-F",
+    "#{session_name}",
+  }
+  local out = vim.fn.systemlist(cmd)
+  if vim.v.shell_error ~= 0 then
+    return {}
+  end
+
+  table.sort(out)
+  return out
+end
+
+local function workspace_tmux_window_count(socket_path, session_name)
+  local cmd = {
+    "tmux",
+    "-S",
+    socket_path,
+    "list-windows",
+    "-t",
+    session_name,
+    "-F",
+    "#{window_index}",
+  }
+  local out = vim.fn.systemlist(cmd)
+  if vim.v.shell_error ~= 0 then
+    return 0
+  end
+
+  return #out
+end
+
+local function workspace_tmux_ensure_two_windows(socket_path, session_name, cwd)
+  local window_count = workspace_tmux_window_count(socket_path, session_name)
+
+  while window_count < 2 do
+    workspace_run_tmux(socket_path, {
+      "new-window",
+      "-d",
+      "-t",
+      session_name .. ":",
+      "-n",
+      window_count == 0 and "main" or "aux",
+      "-c",
+      cwd,
+    })
+    window_count = workspace_tmux_window_count(socket_path, session_name)
+  end
+end
+
 local function workspace_prepare_tmux(socket_path, workspace_name, pane_count)
   local cwd = vim.loop.cwd()
+  local session_names = workspace_tmux_list_sessions(socket_path)
 
-  for index = 1, pane_count do
-    local session_name = string.format("%s-pane-%d", workspace_name, index)
-    if not workspace_tmux_session_exists(socket_path, session_name) then
-      workspace_run_tmux(socket_path, {
-        "new-session",
-        "-d",
-        "-s",
-        session_name,
-        "-n",
-        "main",
-        "-c",
-        cwd,
-      })
-      workspace_run_tmux(socket_path, {
-        "new-window",
-        "-d",
-        "-t",
-        session_name .. ":",
-        "-n",
-        "aux",
-        "-c",
-        cwd,
-      })
-    end
+  for _, session_name in ipairs(session_names) do
+    workspace_tmux_ensure_two_windows(socket_path, session_name, cwd)
   end
+
+  for index = #session_names + 1, pane_count do
+    local session_name = string.format("%s-pane-%d", workspace_name, index)
+    while workspace_tmux_session_exists(socket_path, session_name) do
+      index = index + 1
+      session_name = string.format("%s-pane-%d", workspace_name, index)
+    end
+
+    workspace_run_tmux(socket_path, {
+      "new-session",
+      "-d",
+      "-s",
+      session_name,
+      "-n",
+      "main",
+      "-c",
+      cwd,
+    })
+    workspace_run_tmux(socket_path, {
+      "new-window",
+      "-d",
+      "-t",
+      session_name .. ":",
+      "-n",
+      "aux",
+      "-c",
+      cwd,
+    })
+    table.insert(session_names, session_name)
+  end
+
+  return session_names
 end
 
 local function workspace_open_tmux_terminal_here(socket_path, session_name)
   vim.cmd("enew")
   vim.fn.termopen({ "tmux", "-S", socket_path, "attach-session", "-t", session_name })
   vim.bo.buflisted = false
+  vim.api.nvim_buf_set_var(0, "workspace_tmux_socket_path", socket_path)
+  vim.api.nvim_buf_set_var(0, "workspace_tmux_session_name", session_name)
   vim.wo.winfixheight = false
   vim.wo.winfixwidth = false
 end
 
-local function workspace_fill_tmux_windows(socket_path, workspace_name, pane_count)
+local function workspace_fill_tmux_windows(socket_path, session_names)
   local windows = workspace_sorted_windows()
 
   for index, win in ipairs(windows) do
     vim.api.nvim_set_current_win(win)
-    workspace_open_tmux_terminal_here(
-      socket_path,
-      string.format("%s-pane-%d", workspace_name, index)
-    )
+    local session_name = session_names[index]
+    if session_name ~= nil then
+      workspace_open_tmux_terminal_here(socket_path, session_name)
+    end
   end
 
   vim.cmd("wincmd =")
   vim.cmd("startinsert")
 end
 
-vim.api.nvim_create_user_command("Workspace01", function()
+vim.api.nvim_create_user_command("Workspace4", function()
   local target_buffers = workspace_visible_buffers()
 
   workspace_build_layout_01()
-  workspace_fill_windows(target_buffers)
+  workspace_fill_windows(target_buffers, { open_empty_when_missing = true })
 end, { desc = "Open a 2x2 workspace in the current tab" })
 
-vim.api.nvim_create_user_command("Workspace02", function()
+vim.api.nvim_create_user_command("Workspace3", function()
   local target_buffers = workspace_visible_buffers()
 
   workspace_build_layout_02()
-  workspace_fill_windows(target_buffers)
+  workspace_fill_windows(target_buffers, { open_empty_when_missing = true })
 end, { desc = "Open a 3-column workspace in the current tab" })
 
 vim.keymap.set("n", "<leader>aq", function()
@@ -646,54 +787,76 @@ vim.keymap.set("n", "<leader>ar", function()
   workspace_focus_window(4)
 end, { desc = "Focus workspace window 4" })
 
-vim.api.nvim_create_user_command("WorkspaceInit1", function()
+vim.keymap.set("n", "<leader>aa4", function()
+  vim.cmd("Workspace4")
+end, { desc = "Open 4-pane workspace" })
+
+vim.keymap.set("n", "<leader>aa3", function()
+  vim.cmd("Workspace3")
+end, { desc = "Open 3-pane workspace" })
+
+vim.keymap.set("n", "<leader>a4", function()
+  vim.cmd("WorkspaceInit4")
+end, { desc = "Open 4-pane tmux workspace" })
+
+vim.keymap.set("n", "<leader>a3", function()
+  vim.cmd("WorkspaceInit3")
+end, { desc = "Open 3-pane tmux workspace" })
+
+vim.keymap.set("n", "<leader>a0", function()
+  workspace_zoom_current_window()
+end, { desc = "Maximize current workspace window" })
+
+vim.keymap.set("n", "<leader>a9", function()
+  workspace_close_zoom_tab()
+end, { desc = "Close workspace zoom tab" })
+
+vim.api.nvim_create_user_command("WorkspaceInit4", function()
   local socket_path = workspace_tmux_socket_path()
 
   local ok, err = pcall(function()
-    workspace_prepare_tmux(socket_path, "workspace-init1", 4)
+    local session_names = workspace_prepare_tmux(socket_path, "workspace-init4", 4)
+    workspace_build_layout_01()
+    workspace_fill_tmux_windows(socket_path, session_names)
   end)
   if not ok then
-    vim.notify("WorkspaceInit1 tmux error:\n" .. err, vim.log.levels.ERROR)
+    vim.notify("WorkspaceInit4 tmux error:\n" .. err, vim.log.levels.ERROR)
     return
   end
-
-  workspace_build_layout_01()
-  workspace_fill_tmux_windows(socket_path, "workspace-init1", 4)
 end, { desc = "Open a 2x2 tmux-backed workspace in the current tab" })
 
-vim.api.nvim_create_user_command("WorkspaceInit2", function()
+vim.api.nvim_create_user_command("WorkspaceInit3", function()
   local socket_path = workspace_tmux_socket_path()
 
   local ok, err = pcall(function()
-    workspace_prepare_tmux(socket_path, "workspace-init2", 3)
+    local session_names = workspace_prepare_tmux(socket_path, "workspace-init3", 3)
+    workspace_build_layout_02()
+    workspace_fill_tmux_windows(socket_path, session_names)
   end)
   if not ok then
-    vim.notify("WorkspaceInit2 tmux error:\n" .. err, vim.log.levels.ERROR)
+    vim.notify("WorkspaceInit3 tmux error:\n" .. err, vim.log.levels.ERROR)
     return
   end
-
-  workspace_build_layout_02()
-  workspace_fill_tmux_windows(socket_path, "workspace-init2", 3)
 end, { desc = "Open a 3-column tmux-backed workspace in the current tab" })
 
 vim.keymap.set("c", "<CR>", function()
-  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-01" then
-    return "<C-u>Workspace01<CR>"
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-4" then
+    return "<C-u>Workspace4<CR>"
   end
-  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-02" then
-    return "<C-u>Workspace02<CR>"
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-3" then
+    return "<C-u>Workspace3<CR>"
   end
-  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-init1" then
-    return "<C-u>WorkspaceInit1<CR>"
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-init4" then
+    return "<C-u>WorkspaceInit4<CR>"
   end
-  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspaceinit1" then
-    return "<C-u>WorkspaceInit1<CR>"
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspaceinit4" then
+    return "<C-u>WorkspaceInit4<CR>"
   end
-  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-init2" then
-    return "<C-u>WorkspaceInit2<CR>"
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-init3" then
+    return "<C-u>WorkspaceInit3<CR>"
   end
-  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspaceinit2" then
-    return "<C-u>WorkspaceInit2<CR>"
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspaceinit3" then
+    return "<C-u>WorkspaceInit3<CR>"
   end
   return "<CR>"
 end, { expr = true, desc = "Workspace command aliases" })
