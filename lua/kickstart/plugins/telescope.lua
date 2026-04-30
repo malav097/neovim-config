@@ -126,43 +126,57 @@ return {
 					ksh = true,
 				}
 
-				local pane_state_lines = vim.fn.systemlist({
+				local window_targets = vim.fn.systemlist({
 					"tmux",
 					"-S",
 					socket_path,
-					"list-panes",
+					"list-windows",
 					"-t",
 					session_name,
 					"-F",
-					"#{pane_id}\t#{pane_in_mode}\t#{pane_current_command}",
+					"#{window_id}",
 				})
-				if vim.v.shell_error ~= 0 or pane_state_lines[1] == nil then
+				if vim.v.shell_error ~= 0 or window_targets[1] == nil then
 					return
 				end
 
-				for _, pane_state in ipairs(pane_state_lines) do
-					local pane_id, pane_in_mode, pane_command = pane_state:match("^(%%%d+)\t(%d+)\t(.+)$")
-					if pane_id ~= nil and pane_in_mode == "0" and shell_commands[pane_command] then
-						vim.fn.system({
-							"tmux",
-							"-S",
-							socket_path,
-							"send-keys",
-							"-t",
-							pane_id,
-							"-l",
-							"cd " .. vim.fn.shellescape(selected_cwd),
-						})
-						if vim.v.shell_error == 0 then
-							vim.fn.system({
-								"tmux",
-								"-S",
-								socket_path,
-								"send-keys",
-								"-t",
-								pane_id,
-								"Enter",
-							})
+				for _, window_target in ipairs(window_targets) do
+					local pane_state_lines = vim.fn.systemlist({
+						"tmux",
+						"-S",
+						socket_path,
+						"list-panes",
+						"-t",
+						window_target,
+						"-F",
+						"#{pane_id}\t#{pane_in_mode}\t#{pane_current_command}",
+					})
+					if vim.v.shell_error == 0 then
+						for _, pane_state in ipairs(pane_state_lines) do
+							local pane_id, pane_in_mode, pane_command = pane_state:match("^(%%%d+)\t(%d+)\t(.+)$")
+							if pane_id ~= nil and pane_in_mode == "0" and shell_commands[pane_command] then
+								vim.fn.system({
+									"tmux",
+									"-S",
+									socket_path,
+									"send-keys",
+									"-t",
+									pane_id,
+									"-l",
+									"cd " .. vim.fn.shellescape(selected_cwd),
+								})
+								if vim.v.shell_error == 0 then
+									vim.fn.system({
+										"tmux",
+										"-S",
+										socket_path,
+										"send-keys",
+										"-t",
+										pane_id,
+										"Enter",
+									})
+								end
+							end
 						end
 					end
 				end

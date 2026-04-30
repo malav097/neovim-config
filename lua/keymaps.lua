@@ -606,6 +606,7 @@ end
 
 local workspace_build_layout_01
 local workspace_build_layout_02
+local workspace_build_layout_03
 
 local function workspace_zoom_current_window()
   if vim.t.workspace_zoom_parent_tab ~= nil then
@@ -669,6 +670,11 @@ end
 workspace_build_layout_02 = function()
   vim.cmd("only")
   vim.cmd("vsplit")
+  vim.cmd("vsplit")
+end
+
+workspace_build_layout_03 = function()
+  vim.cmd("only")
   vim.cmd("vsplit")
 end
 
@@ -933,6 +939,13 @@ vim.api.nvim_create_user_command("Workspace3", function()
   workspace_fill_windows(target_buffers, { open_empty_when_missing = true })
 end, { desc = "Open a 3-column workspace in the current tab" })
 
+vim.api.nvim_create_user_command("Workspace2", function()
+  local target_buffers = workspace_visible_buffers()
+
+  workspace_build_layout_03()
+  workspace_fill_windows(target_buffers, { open_empty_when_missing = true })
+end, { desc = "Open a 2-column workspace in the current tab" })
+
 vim.keymap.set("n", "<leader>aq", function()
   workspace_focus_window(1)
 end, { desc = "Focus workspace window 1" })
@@ -957,6 +970,10 @@ vim.keymap.set("n", "<leader>aa3", function()
   vim.cmd("Workspace3")
 end, { desc = "Open 3-pane workspace" })
 
+vim.keymap.set("n", "<leader>aa2", function()
+  vim.cmd("Workspace2")
+end, { desc = "Open 2-pane workspace" })
+
 vim.keymap.set("n", "<leader>a4", function()
   vim.cmd("WorkspaceInit4")
 end, { desc = "Open 4-pane tmux workspace" })
@@ -964,6 +981,10 @@ end, { desc = "Open 4-pane tmux workspace" })
 vim.keymap.set("n", "<leader>a3", function()
   vim.cmd("WorkspaceInit3")
 end, { desc = "Open 3-pane tmux workspace" })
+
+vim.keymap.set("n", "<leader>a2", function()
+  vim.cmd("WorkspaceInit2")
+end, { desc = "Open 2-pane tmux workspace" })
 
 vim.keymap.set("n", "<leader>tn", function()
   workspace_tmux_command_for_current_buffer(function(session_name)
@@ -1019,12 +1040,29 @@ vim.api.nvim_create_user_command("WorkspaceInit3", function()
   end
 end, { desc = "Open a 3-column tmux-backed workspace in the current tab" })
 
+vim.api.nvim_create_user_command("WorkspaceInit2", function()
+  local socket_path = workspace_tmux_socket_path()
+
+  local ok, err = pcall(function()
+    local session_names = workspace_prepare_tmux(socket_path, "workspace-init2", 2)
+    workspace_build_layout_03()
+    workspace_fill_tmux_windows(socket_path, session_names)
+  end)
+  if not ok then
+    vim.notify("WorkspaceInit2 tmux error:\n" .. err, vim.log.levels.ERROR)
+    return
+  end
+end, { desc = "Open a 2-column tmux-backed workspace in the current tab" })
+
 vim.keymap.set("c", "<CR>", function()
   if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-4" then
     return "<C-u>Workspace4<CR>"
   end
   if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-3" then
     return "<C-u>Workspace3<CR>"
+  end
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-2" then
+    return "<C-u>Workspace2<CR>"
   end
   if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-init4" then
     return "<C-u>WorkspaceInit4<CR>"
@@ -1037,6 +1075,12 @@ vim.keymap.set("c", "<CR>", function()
   end
   if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspaceinit3" then
     return "<C-u>WorkspaceInit3<CR>"
+  end
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-init2" then
+    return "<C-u>WorkspaceInit2<CR>"
+  end
+  if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspaceinit2" then
+    return "<C-u>WorkspaceInit2<CR>"
   end
   return "<CR>"
 end, { expr = true, desc = "Workspace command aliases" })
