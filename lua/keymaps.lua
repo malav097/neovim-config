@@ -914,7 +914,7 @@ end
 local function workspace_open_tmux_terminal_here(socket_path, session_name)
   vim.cmd("enew")
   vim.fn.termopen({ "tmux", "-S", socket_path, "attach-session", "-t", session_name })
-  vim.bo.buflisted = false
+  vim.bo.buflisted = true
   vim.api.nvim_buf_set_var(0, "workspace_tmux_socket_path", socket_path)
   vim.api.nvim_buf_set_var(0, "workspace_tmux_session_name", session_name)
   vim.wo.winfixheight = false
@@ -1121,6 +1121,15 @@ vim.api.nvim_create_autocmd("TextYankPost", {
   group = vim.api.nvim_create_augroup("kickstart-highlight-yank", { clear = true }),
   callback = function()
     vim.hl.on_yank()
+  end,
+})
+
+vim.api.nvim_create_autocmd("TermOpen", {
+  desc = "Show line numbers in terminal buffers",
+  group = vim.api.nvim_create_augroup("kickstart-terminal-numbers", { clear = true }),
+  callback = function()
+    vim.opt_local.number = true
+    vim.opt_local.relativenumber = true
   end,
 })
 
