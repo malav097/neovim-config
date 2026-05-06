@@ -56,8 +56,8 @@ vim.schedule(function()
       nnoremap <leader>aj :wincmd j<CR>
       nnoremap <leader>ah :wincmd h<CR>
       nnoremap <leader>al :wincmd l<CR>
-      nnoremap <leader>av <cmd>vertical split<cr>
-      nnoremap <leader>as <cmd>split<cr>
+      nnoremap <leader>av <cmd>vnew<cr>
+      nnoremap <leader>as <cmd>new<cr>
       tnoremap <leader><Esc> <C-\><C-n>j:
   ]])
 end)
@@ -435,24 +435,6 @@ vim.keymap.set("n", "<leader>08", 'i  - ')
 -- toggleterm
 vim.keymap.set("n", "<leader>55", "<cmd>1ToggleTerm direction=float<CR>")
 vim.keymap.set("n", "<leader>5h", "<cmd>ToggleTerm<CR>")
--- AI remaps
-vim.keymap.set(
-  'v',
-  '<leader>4d',
-  [[:'<,'>AvanteEdit correct granmar and format in a professional way using markdown. use correct puntuation. no more than 80 characters per line and if it is in another language translate to english<CR>]],
-  {
-    noremap = true,
-  }
-)
-vim.keymap.set(
-  'v',
-  '<leader>4e',
-  [[:'<,'>AvanteEdit correct granmar and format in a professional way using markdown. use correct puntuation. Use proper capitalization. no more than 80 characters per line and if it is in another language translate to spanish<CR>]],
-  {
-    noremap = true,
-  }
-)
-
 -- vertical term
 vim.keymap.set("n", "<leader>5v", function()
   -- Open a vertical split to the right
@@ -513,88 +495,59 @@ end
 
 local function workspace_row_major_windows()
   local windows = vim.api.nvim_tabpage_list_wins(0)
+  local bounds = {}
+  local seen = {}
+  local ordered = {}
+  local min_row = math.huge
+  local min_col = math.huge
+  local max_row = -math.huge
+  local max_col = -math.huge
 
-  table.sort(windows, function(a, b)
-    local row_a, col_a = unpack(vim.api.nvim_win_get_position(a))
-    local row_b, col_b = unpack(vim.api.nvim_win_get_position(b))
-    local center_row_a = row_a + (vim.api.nvim_win_get_height(a) / 2)
-    local center_row_b = row_b + (vim.api.nvim_win_get_height(b) / 2)
-
-    if math.abs(center_row_a - center_row_b) <= 1 then
-      return col_a < col_b
-    end
-
-    return center_row_a < center_row_b
-  end)
-
-  return windows
-end
-
-local function workspace_focus_ordered_windows()
-  local windows = vim.api.nvim_tabpage_list_wins(0)
-
-  if #windows == 3 then
-    table.sort(windows, function(a, b)
-      local _, col_a = unpack(vim.api.nvim_win_get_position(a))
-      local _, col_b = unpack(vim.api.nvim_win_get_position(b))
-      local center_col_a = col_a + (vim.api.nvim_win_get_width(a) / 2)
-      local center_col_b = col_b + (vim.api.nvim_win_get_width(b) / 2)
-      return center_col_a < center_col_b
-    end)
-    return windows
+  for _, win in ipairs(windows) do
+    local row, col = unpack(vim.api.nvim_win_get_position(win))
+    local height = vim.api.nvim_win_get_height(win)
+    local width = vim.api.nvim_win_get_width(win)
+    local item = {
+      win = win,
+      top = row,
+      left = col,
+      bottom = row + height - 1,
+      right = col + width - 1,
+    }
+    table.insert(bounds, item)
+    min_row = math.min(min_row, item.top)
+    min_col = math.min(min_col, item.left)
+    max_row = math.max(max_row, item.bottom)
+    max_col = math.max(max_col, item.right)
   end
 
-  if #windows == 4 then
-    local decorated = {}
-    local total_center_row = 0
-    local total_center_col = 0
-
-    for _, win in ipairs(windows) do
-      local row, col = unpack(vim.api.nvim_win_get_position(win))
-      local center_row = row + (vim.api.nvim_win_get_height(win) / 2)
-      local center_col = col + (vim.api.nvim_win_get_width(win) / 2)
-      total_center_row = total_center_row + center_row
-      total_center_col = total_center_col + center_col
-      table.insert(decorated, {
-        win = win,
-        center_row = center_row,
-        center_col = center_col,
-      })
-    end
-
-    local mid_row = total_center_row / #decorated
-    local mid_col = total_center_col / #decorated
-    local ordered = { nil, nil, nil, nil }
-
-    for _, item in ipairs(decorated) do
-      local is_top = item.center_row < mid_row
-      local is_left = item.center_col < mid_col
-
-      if is_top and is_left then
-        ordered[1] = item.win
-      elseif is_top and not is_left then
-        ordered[2] = item.win
-      elseif not is_top and is_left then
-        ordered[3] = item.win
-      else
-        ordered[4] = item.win
+  for row = min_row, max_row do
+    for col = min_col, max_col do
+      for _, item in ipairs(bounds) do
+        if not seen[item.win]
+          and row >= item.top
+          and row <= item.bottom
+          and col >= item.left
+          and col <= item.right then
+          seen[item.win] = true
+          table.insert(ordered, item.win)
+          break
+        end
       end
     end
-
-    local compact = {}
-    for _, win in ipairs(ordered) do
-      if win ~= nil then
-        table.insert(compact, win)
-      end
-    end
-    return compact
   end
 
-  return workspace_row_major_windows()
+  for _, item in ipairs(bounds) do
+    if not seen[item.win] then
+      table.insert(ordered, item.win)
+    end
+  end
+
+  return ordered
 end
 
 local function workspace_focus_window(index)
-  local windows = workspace_focus_ordered_windows()
+  local windows = workspace_row_major_windows()
   local target = windows[index]
 
   if target == nil or not vim.api.nvim_win_is_valid(target) then
@@ -604,28 +557,86 @@ local function workspace_focus_window(index)
   vim.api.nvim_set_current_win(target)
 end
 
+local workspace_focus_hint_windows = {}
+local workspace_focus_hint_timer = nil
+
+local function workspace_clear_focus_hints()
+  if workspace_focus_hint_timer ~= nil then
+    workspace_focus_hint_timer:stop()
+    workspace_focus_hint_timer:close()
+    workspace_focus_hint_timer = nil
+  end
+
+  for _, win in ipairs(workspace_focus_hint_windows) do
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  workspace_focus_hint_windows = {}
+end
+
+local function workspace_show_focus_hints()
+  local labels = { "q", "w", "e", "r", "u", "i" }
+  local windows = workspace_row_major_windows()
+
+  workspace_clear_focus_hints()
+
+  for index, target_win in ipairs(windows) do
+    local label = labels[index]
+    if label == nil or not vim.api.nvim_win_is_valid(target_win) then
+      break
+    end
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { " " .. label .. " " })
+
+    local width = vim.api.nvim_win_get_width(target_win)
+    local height = vim.api.nvim_win_get_height(target_win)
+    local row = math.max(0, math.floor((height - 1) / 2))
+    local col = math.max(0, math.floor((width - 3) / 2))
+
+    local hint_win = vim.api.nvim_open_win(buf, false, {
+      relative = "win",
+      win = target_win,
+      row = row,
+      col = col,
+      width = 3,
+      height = 1,
+      style = "minimal",
+      border = "rounded",
+      focusable = false,
+      noautocmd = true,
+      zindex = 250,
+    })
+
+    vim.wo[hint_win].winhighlight = "Normal:Visual,FloatBorder:WarningMsg"
+    table.insert(workspace_focus_hint_windows, hint_win)
+  end
+
+  workspace_focus_hint_timer = vim.loop.new_timer()
+  workspace_focus_hint_timer:start(1500, 0, vim.schedule_wrap(workspace_clear_focus_hints))
+end
+
 local workspace_build_layout_01
 local workspace_build_layout_02
 local workspace_build_layout_03
 
 local function workspace_zoom_current_window()
-  if vim.t.workspace_zoom_parent_tab ~= nil then
+  if vim.t.zoomed == 1 then
     return
   end
 
-  local parent_tab = vim.api.nvim_get_current_tabpage()
-  vim.cmd("tab split")
-  vim.t.workspace_zoom_parent_tab = parent_tab
+  vim.fn["zoom#toggle"]()
 end
 
 local function workspace_close_zoom_tab()
-  local parent_tab = vim.t.workspace_zoom_parent_tab
-  if parent_tab == nil then
-    vim.notify("Current tab is not a workspace zoom tab", vim.log.levels.WARN)
+  if vim.t.zoomed ~= 1 then
+    vim.notify("Current window is not zoomed", vim.log.levels.WARN)
     return
   end
 
-  vim.cmd("tabclose")
+  vim.fn["zoom#toggle"]()
 end
 
 local function workspace_open_empty_buffer_here()
@@ -961,6 +972,18 @@ end, { desc = "Focus workspace window 3" })
 vim.keymap.set("n", "<leader>ar", function()
   workspace_focus_window(4)
 end, { desc = "Focus workspace window 4" })
+
+vim.keymap.set("n", "<leader>au", function()
+  workspace_focus_window(5)
+end, { desc = "Focus workspace window 5" })
+
+vim.keymap.set("n", "<leader>ai", function()
+  workspace_focus_window(6)
+end, { desc = "Focus workspace window 6" })
+
+vim.keymap.set("n", "<leader>at", function()
+  workspace_show_focus_hints()
+end, { desc = "Show workspace focus hints" })
 
 vim.keymap.set("n", "<leader>aa4", function()
   vim.cmd("Workspace4")
