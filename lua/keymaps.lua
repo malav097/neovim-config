@@ -1128,8 +1128,12 @@ vim.api.nvim_create_autocmd("TermOpen", {
   desc = "Show line numbers in terminal buffers",
   group = vim.api.nvim_create_augroup("kickstart-terminal-numbers", { clear = true }),
   callback = function()
+    local cyan = "#00d6ec"
+    vim.api.nvim_set_hl(0, "TermLineNr", { fg = cyan, ctermfg = 44 })
+    vim.api.nvim_set_hl(0, "TermCursorLineNr", { fg = cyan, ctermfg = 44, bold = true })
     vim.opt_local.number = true
     vim.opt_local.relativenumber = true
+    vim.opt_local.winhighlight = "LineNr:TermLineNr,CursorLineNr:TermCursorLineNr"
   end,
 })
 
