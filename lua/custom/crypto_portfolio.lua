@@ -1,4 +1,5 @@
 local M = {}
+local NS = vim.api.nvim_create_namespace('custom.crypto_portfolio')
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Config loading
@@ -361,6 +362,16 @@ local function formula_comment_prefix()
   return start
 end
 
+local function address_tail(address)
+  if address == nil or address == '' then
+    return ''
+  end
+  if #address <= 8 then
+    return address
+  end
+  return address:sub(-8)
+end
+
 local function build_table_mode_block(title, headers, rows, total_row, total_col)
   local lines = {}
   table.insert(lines, '### ' .. title)
@@ -458,10 +469,9 @@ local function summarize_holdings(entries, prices)
     local wallet_key = entry.name
     local wallet_row = by_wallet[wallet_key] or {
       wallet = entry.name,
-      positions = 0,
+      address_tail = address_tail(entry.address),
       usd_value = 0,
     }
-    wallet_row.positions = wallet_row.positions + 1
     wallet_row.usd_value = wallet_row.usd_value + (usd_value or 0)
     by_wallet[wallet_key] = wallet_row
   end
@@ -501,10 +511,10 @@ local function summarize_holdings(entries, prices)
   local holdings_table_rows = {}
   for _, row in ipairs(holdings_rows) do
     holdings_table_rows[#holdings_table_rows + 1] = {
+      row.wallet,
       row.asset,
       row.protocol,
       row.network,
-      row.wallet,
       row.quantity_str,
       fmt_usd_raw(row.price),
       fmt_usd_raw(row.usd_value),
@@ -515,13 +525,15 @@ local function summarize_holdings(entries, prices)
   return overview_rows, holdings_table_rows, asset_rows, wallet_rows, total_usd
 end
 
-local function insert_tables(bufnr, cursor_row, entries, prices)
+local function build_portfolio_lines(entries, prices)
   local lines = {}
 
   if #entries == 0 then
-    vim.notify('No wallet data to display.', vim.log.levels.WARN, { title = 'CryptoPortfolio' })
-    return
+    return nil
   end
+
+  table.insert(lines, '-- script runned ' .. os.date('%d/%m/%Y at %H:%M') .. ' --')
+  table.insert(lines, '')
 
   local overview_rows, holdings_rows, asset_rows, wallet_rows, total_usd = summarize_holdings(entries, prices)
 
@@ -533,7 +545,7 @@ local function insert_tables(bufnr, cursor_row, entries, prices)
 
   vim.list_extend(lines, build_table_mode_block(
     'Holdings',
-    { 'asset', 'protocol', 'network', 'wallet', 'quantity', 'price_usd', 'value_usd', 'allocation' },
+    { 'wallet', 'asset', 'protocol', 'network', 'quantity', 'price_usd', 'value_usd', 'allocation' },
     holdings_rows,
     { 'total', '', '', '', '', '', fmt_usd_raw(total_usd), '100.00%' },
     7
@@ -560,17 +572,27 @@ local function insert_tables(bufnr, cursor_row, entries, prices)
   for _, row in ipairs(wallet_rows) do
     by_wallet_rows[#by_wallet_rows + 1] = {
       row.wallet,
-      tostring(row.positions),
+      row.address_tail,
       fmt_usd_raw(row.usd_value),
     }
   end
   vim.list_extend(lines, build_table_mode_block(
     'By Wallet',
-    { 'wallet', 'positions', 'value_usd' },
+    { 'wallet', 'address_tail', 'value_usd' },
     by_wallet_rows,
     { 'total', '', fmt_usd_raw(total_usd) },
     3
   ))
+
+  return lines
+end
+
+local function insert_tables(bufnr, cursor_row, entries, prices)
+  local lines = build_portfolio_lines(entries, prices)
+  if not lines then
+    vim.notify('No wallet data to display.', vim.log.levels.WARN, { title = 'CryptoPortfolio' })
+    return
+  end
 
   vim.api.nvim_buf_set_lines(bufnr, cursor_row, cursor_row, false, lines)
   vim.notify(
@@ -584,15 +606,12 @@ end
 -- Main entry point
 -- ─────────────────────────────────────────────────────────────────────────────
 
-function M.generate()
+function M.generate_lines(cb)
   local cfg, err = load_config()
   if err then
     vim.notify(err, vim.log.levels.ERROR, { title = 'CryptoPortfolio' })
     return
   end
-
-  local bufnr      = vim.api.nvim_get_current_buf()
-  local cursor_row = vim.api.nvim_win_get_cursor(0)[1]
 
   local entries = {}
   local pending = 0
@@ -606,7 +625,7 @@ function M.generate()
           { title = 'CryptoPortfolio' }
         )
       end
-      insert_tables(bufnr, cursor_row, entries, prices or {})
+      cb(build_portfolio_lines(entries, prices or {}))
     end)
   end
 
@@ -753,6 +772,60 @@ function M.generate()
     vim.log.levels.INFO,
     { title = 'CryptoPortfolio' }
   )
+end
+
+function M.generate()
+  local bufnr      = vim.api.nvim_get_current_buf()
+  local cursor_row = vim.api.nvim_win_get_cursor(0)[1]
+
+  M.generate_lines(function(lines)
+    if not lines then
+      vim.notify('No wallet data to display.', vim.log.levels.WARN, { title = 'CryptoPortfolio' })
+      return
+    end
+
+    vim.api.nvim_buf_set_lines(bufnr, cursor_row, cursor_row, false, lines)
+    vim.notify(
+      'Portfolio inserted (' .. #lines .. ' lines).',
+      vim.log.levels.INFO,
+      { title = 'CryptoPortfolio' }
+    )
+  end)
+end
+
+function M.append_at_extmark(bufnr, extmark_id)
+  M.generate_lines(function(lines)
+    if not lines then
+      vim.notify('No wallet data to display.', vim.log.levels.WARN, { title = 'CryptoPortfolio' })
+      return
+    end
+
+    local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, NS, extmark_id, {})
+    if not pos or #pos == 0 then
+      vim.notify('Monthly template anchor not found.', vim.log.levels.WARN, { title = 'CryptoPortfolio' })
+      return
+    end
+
+    local insert_row = pos[1]
+    local monthly_block = {
+      '',
+      '================================================================================ ',
+      'WALLETS',
+      '',
+    }
+    vim.list_extend(monthly_block, lines)
+    vim.api.nvim_buf_set_lines(bufnr, insert_row, insert_row, false, monthly_block)
+    vim.api.nvim_buf_del_extmark(bufnr, NS, extmark_id)
+    vim.notify(
+      'Portfolio appended to monthly template (' .. #lines .. ' lines).',
+      vim.log.levels.INFO,
+      { title = 'CryptoPortfolio' }
+    )
+  end)
+end
+
+function M.namespace()
+  return NS
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────

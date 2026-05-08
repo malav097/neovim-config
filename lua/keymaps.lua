@@ -174,7 +174,72 @@ local function extract_checkbox_task(line)
   return line:match('^%s*%- %[(.)%]%s*(.-)%s*$')
 end
 
-local function is_task_section_label(text)
+local function task_indent(line)
+  if line == nil then
+    return 0
+  end
+  local indent = line:match('^(%s*)%- %[')
+  return indent and #indent or 0
+end
+
+local function task_is_completed(marker)
+  return marker ~= nil and marker:upper() == 'X'
+end
+
+local function annotate_task_origin(line, from_month)
+  if line == nil or from_month == nil or from_month == '' then
+    return line
+  end
+  if line:find('<from ', 1, true) ~= nil then
+    return line
+  end
+  return line:gsub('%s*$', '') .. ' <from ' .. from_month .. '>'
+end
+
+local function task_tree_has_incomplete(node)
+  if node == nil then
+    return false
+  end
+  if not task_is_completed(node.marker) then
+    return true
+  end
+  for _, child in ipairs(node.children or {}) do
+    if task_tree_has_incomplete(child) then
+      return true
+    end
+  end
+  return false
+end
+
+local is_task_section_label
+
+local function append_migrated_task_tree(lines, node, from_month)
+  if node == nil or not task_tree_has_incomplete(node) then
+    return
+  end
+
+  local function append_full_task_tree(target, current, month_label)
+    if current == nil then
+      return
+    end
+    if not is_task_section_label(current.text or '') then
+      table.insert(target, annotate_task_origin(current.line, month_label))
+    end
+    for _, child in ipairs(current.children or {}) do
+      append_full_task_tree(target, child, month_label)
+    end
+  end
+
+  if not is_task_section_label(node.text or '') then
+    table.insert(lines, annotate_task_origin(node.line, from_month))
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    append_full_task_tree(lines, child, from_month)
+  end
+end
+
+is_task_section_label = function(text)
   if text == nil or text == '' then
     return false
   end
@@ -196,7 +261,8 @@ local function extract_incomplete_task_sections(lines)
       current_section = {
         separator = line,
         title = nil,
-        tasks = {},
+        roots = {},
+        stack = {},
       }
       table.insert(sections, current_section)
       can_capture_title = true
@@ -207,8 +273,27 @@ local function extract_incomplete_task_sections(lines)
         local marker, text = extract_checkbox_task(line)
         if marker ~= nil then
           can_capture_title = false
-          if marker == ' ' and text ~= '' and not is_task_section_label(text) then
-            table.insert(current_section.tasks, line)
+          if text ~= '' then
+            local node = {
+              line = line,
+              marker = marker,
+              text = text,
+              indent = task_indent(line),
+              children = {},
+            }
+
+            while #current_section.stack > 0 and current_section.stack[#current_section.stack].indent >= node.indent do
+              table.remove(current_section.stack)
+            end
+
+            local parent = current_section.stack[#current_section.stack]
+            if parent ~= nil then
+              parent.children[#parent.children + 1] = node
+            else
+              current_section.roots[#current_section.roots + 1] = node
+            end
+
+            current_section.stack[#current_section.stack + 1] = node
           end
         elseif can_capture_title and not line:match('^%s*%- ') then
           current_section.title = line
@@ -220,7 +305,14 @@ local function extract_incomplete_task_sections(lines)
 
   local filtered_sections = {}
   for _, section in ipairs(sections) do
-    if #section.tasks > 0 then
+    local has_incomplete = false
+    for _, node in ipairs(section.roots) do
+      if task_tree_has_incomplete(node) then
+        has_incomplete = true
+        break
+      end
+    end
+    if has_incomplete then
       table.insert(filtered_sections, section)
     end
   end
@@ -234,7 +326,6 @@ local function append_task_section(lines, separator, title, tasks)
 
   table.insert(lines, '')
   table.insert(lines, separator or '================================================================================ ')
-  table.insert(lines, '')
   if title ~= nil and title ~= '' then
     table.insert(lines, title)
     table.insert(lines, '')
@@ -242,22 +333,17 @@ local function append_task_section(lines, separator, title, tasks)
   vim.list_extend(lines, tasks)
 end
 
-local function normalize_task_lines(tasks, indent)
-  local normalized = {}
-  local prefix = string.rep(' ', indent or 0) .. '- [ ] '
-
-  if tasks == nil then
-    return normalized
+local function migrated_task_lines(section, from_month)
+  local migrated = {}
+  if section == nil then
+    return migrated
   end
 
-  for _, line in ipairs(tasks) do
-    local marker, text = extract_checkbox_task(line)
-    if marker ~= nil and text ~= nil and text ~= '' then
-      table.insert(normalized, prefix .. text)
-    end
+  for _, node in ipairs(section.roots or {}) do
+    append_migrated_task_tree(migrated, node, from_month)
   end
 
-  return normalized
+  return migrated
 end
 
 local function previous_month_tasks_lines(year, month, diary_dir)
@@ -283,10 +369,12 @@ local function previous_month_tasks_lines(year, month, diary_dir)
 
   local prev_lines = vim.fn.readfile(prev_path)
   local sections = extract_incomplete_task_sections(prev_lines)
+  local from_month = (month_name_es(prev_month) or tostring(prev_month)):upper()
   local untitled_tasks = {}
   local first_untitled_section = nil
 
   for index, section in ipairs(sections) do
+    local section_tasks = migrated_task_lines(section, from_month)
     if section.title == nil or section.title == '' then
       if first_untitled_section == nil then
         first_untitled_section = {
@@ -294,7 +382,9 @@ local function previous_month_tasks_lines(year, month, diary_dir)
           separator = section.separator,
         }
       end
-      vim.list_extend(untitled_tasks, normalize_task_lines(section.tasks, 0))
+      vim.list_extend(untitled_tasks, section_tasks)
+    else
+      section.migrated_tasks = section_tasks
     end
   end
 
@@ -306,7 +396,7 @@ local function previous_month_tasks_lines(year, month, diary_dir)
         untitled_emitted = true
       end
     else
-      append_task_section(lines, section.separator, section.title, section.tasks)
+      append_task_section(lines, section.separator, section.title, section.migrated_tasks)
     end
   end
 
@@ -353,12 +443,18 @@ vim.keymap.set('n', '<leader>w<leader>5', function()
   local buf = vim.api.nvim_get_current_buf()
   local first = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ''
   local template = monthly_template_lines()
+  local crypto_portfolio = require('custom.crypto_portfolio')
+  local insert_row
   if vim.api.nvim_buf_line_count(buf) == 1 and first == '' then
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, template)
+    insert_row = #template
   else
     local row = vim.api.nvim_win_get_cursor(0)[1]
     vim.api.nvim_buf_set_lines(buf, row, row, true, template)
+    insert_row = row + #template
   end
+  local extmark_id = vim.api.nvim_buf_set_extmark(buf, crypto_portfolio.namespace(), insert_row, 0, {})
+  crypto_portfolio.append_at_extmark(buf, extmark_id)
 end, { desc = 'Insert monthly diary template' })
 
 require('custom.diary_sync').setup()
@@ -1177,6 +1273,7 @@ end, {
 
 -- :CryptoPortfolio — fetch live balances and insert tables at cursor
 vim.keymap.set('n', '<leader>cp', '<cmd>CryptoPortfolio<CR>', { desc = 'Insert crypto portfolio tables' })
+vim.keymap.set('n', '<leader>w<leader>6', '<cmd>CryptoPortfolio<CR>', { desc = 'Insert crypto portfolio tables' })
 
 -- Map <leader>f to run :Figlet with user input
 vim.keymap.set("n", "<leader>07", function()
