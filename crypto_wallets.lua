@@ -5,6 +5,7 @@ return {
     { name = 'trezor-btc02', address = 'bc1qtxnfvs509gml4fdkyhepwfw22g9e0dq5ljgc9s' },
     { name = 'trezor-btc03', address = 'bc1qvmsk9r8vmqk85qy0gy8r9v95t9s6jj0q4g82h8' },
     { name = 'Trust Wallet', address = 'bc1qp02nfd9an5kxw8ea3elvqnw4zy4637r0azexvm' },
+    { name = 'localcoinswap btc', address = '383AafyT58mDodnBNLfx7poXWZYhYNDLP5' },
   },
 
   eth = {
