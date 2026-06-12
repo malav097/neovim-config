@@ -119,6 +119,10 @@ local BTC_API_URLS = {
   'https://mempool.space/api/address/',
 }
 
+local DOGE_API_URLS = {
+  'https://api.blockcypher.com/v1/doge/main/addrs/',
+}
+
 -- BTC via public explorers — no API key needed
 local function fetch_btc(address, cb)
   local urls = {}
@@ -133,6 +137,19 @@ local function fetch_btc(address, cb)
     funded = funded + ((data.mempool_stats and data.mempool_stats.funded_txo_sum) or 0)
     spent = spent + ((data.mempool_stats and data.mempool_stats.spent_txo_sum) or 0)
     cb((funded - spent) / 1e8, nil)
+  end)
+end
+
+-- DOGE via public explorer API — no API key needed
+local function fetch_doge(address, cb)
+  local urls = {}
+  for _, base in ipairs(DOGE_API_URLS) do
+    urls[#urls + 1] = base .. address .. '/balance'
+  end
+
+  get_json_fallback(urls, function(data, err)
+    if err then cb(nil, err) return end
+    cb(((data.final_balance or data.balance) or 0) / 1e8, nil)
   end)
 end
 
@@ -157,11 +174,22 @@ local CHAIN_RPCS = {
     'https://arbitrum-one-rpc.publicnode.com',
     'https://1rpc.io/arb',
   },
+  bsc = {
+    'https://bsc-dataseed.binance.org',
+    'https://bsc-rpc.publicnode.com',
+    'https://1rpc.io/bnb',
+  },
+  linea = {
+    'https://rpc.linea.build',
+    'https://linea.drpc.org',
+  },
 }
 
 -- ETH native balance via public JSON-RPC — no API key needed
-local function fetch_eth(address, cb)
-  post_json_fallback(ETH_RPCS, {
+local function fetch_native_on_chain(chain, address, cb)
+  local rpcs = CHAIN_RPCS[chain]
+  if not rpcs then cb(nil, 'Unknown EVM chain: ' .. tostring(chain)) return end
+  post_json_fallback(rpcs, {
     jsonrpc = '2.0', method = 'eth_getBalance',
     params = { address, 'latest' }, id = 1,
   }, function(data, err)
@@ -170,12 +198,18 @@ local function fetch_eth(address, cb)
   end)
 end
 
+local function fetch_eth(address, cb)
+  fetch_native_on_chain('ethereum', address, cb)
+end
+
 -- ERC-20 token registry
 local ERC20 = {
   usdt = {
     decimals = 6,
     contracts = {
       ethereum = '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+      bsc = { address = '0x55d398326f99059fF775485246999027B3197955', decimals = 18 },
+      linea = '0xA219439258ca9da29E9Cc4cE5596924745e12B93',
     },
   },
   usdc = {
@@ -189,6 +223,13 @@ local ERC20 = {
     decimals = 18,
     contracts = {
       ethereum = '0x6B175474E89094C44Da98b954EedeAC495271d0F',
+    },
+  },
+  musd = {
+    decimals = 6,
+    contracts = {
+      ethereum = '0xacA92E438df0B2401fF60dA7E4337B687a2435DA',
+      linea = '0xacA92E438df0B2401fF60dA7E4337B687a2435DA',
     },
   },
 }
@@ -217,7 +258,9 @@ local function fetch_erc20_on_chain(chain, token_key, address, cb)
   if not tok then cb(nil, 'Unknown ERC-20 token: ' .. token_key) return end
   local rpcs = CHAIN_RPCS[chain]
   if not rpcs then cb(nil, 'Unknown EVM chain: ' .. tostring(chain)) return end
-  local contract = tok.contracts and tok.contracts[chain]
+  local contract_info = tok.contracts and tok.contracts[chain]
+  local contract = type(contract_info) == 'table' and contract_info.address or contract_info
+  local decimals = type(contract_info) == 'table' and contract_info.decimals or tok.decimals
   if not contract then
     cb(nil, 'Token ' .. token_key .. ' unsupported on chain ' .. tostring(chain))
     return
@@ -231,7 +274,7 @@ local function fetch_erc20_on_chain(chain, token_key, address, cb)
   }, function(data, err)
     if err then cb(nil, err) return end
     local raw = hex2num(data.result or '0x0')
-    cb(raw / (10 ^ tok.decimals), nil)
+    cb(raw / (10 ^ decimals), nil)
   end)
 end
 
@@ -283,10 +326,12 @@ end
 
 local ASSET_META = {
   BTC = { price_id = 'bitcoin', decimals = 8, kind = 'crypto' },
+  DOGE = { price_id = 'dogecoin', decimals = 8, kind = 'crypto' },
   ETH = { price_id = 'ethereum', decimals = 6, kind = 'crypto' },
   USDT = { price_id = 'tether', decimals = 2, kind = 'stablecoin' },
   USDC = { price_id = 'usd-coin', decimals = 2, kind = 'stablecoin' },
   DAI = { price_id = 'dai', decimals = 2, kind = 'stablecoin' },
+  MUSD = { price_id = 'metamask-usd', decimals = 2, kind = 'stablecoin' },
 }
 
 local function fmt_num(n, decimals)
@@ -407,7 +452,7 @@ local function infer_aave_asset(entry)
 end
 
 local function fetch_market_prices(cb)
-  local ids = { 'bitcoin', 'ethereum', 'tether', 'usd-coin', 'dai' }
+  local ids = { 'bitcoin', 'dogecoin', 'ethereum', 'tether', 'usd-coin', 'dai', 'metamask-usd' }
   local url = 'https://api.coingecko.com/api/v3/simple/price?ids=' .. table.concat(ids, ',') .. '&vs_currencies=usd'
   curl_get(url, function(data, err)
     if err then
@@ -439,10 +484,15 @@ local function summarize_holdings(entries, prices)
     local quantity = entry.balance
     local price = prices[entry.asset]
     local usd_value = (quantity and price) and (quantity * price) or nil
+    local is_aave = entry.protocol == 'Aave V3'
+    local display_asset = is_aave and 'USD' or entry.asset
+    local display_quantity = (is_aave and usd_value) or quantity
+    local display_price = is_aave and 1 or price
+    local display_decimals = is_aave and 2 or meta.decimals
 
     if usd_value then
       total_usd = total_usd + usd_value
-      if entry.protocol == 'Aave V3' then
+      if is_aave then
         lending_usd = lending_usd + usd_value
       end
       if meta.kind == 'stablecoin' then
@@ -451,14 +501,14 @@ local function summarize_holdings(entries, prices)
     end
 
     holdings_rows[#holdings_rows + 1] = {
-      asset = entry.asset,
+      asset = display_asset,
       protocol = entry.protocol,
       network = entry.network,
       wallet = entry.name,
-      quantity = quantity,
-      price = price,
+      quantity = display_quantity,
+      price = display_price,
       usd_value = usd_value,
-      quantity_str = fmt_num(quantity, meta.decimals),
+      quantity_str = fmt_num(display_quantity, display_decimals),
     }
 
     local asset_row = by_asset[entry.asset] or { quantity = 0, usd_value = 0 }
@@ -477,7 +527,19 @@ local function summarize_holdings(entries, prices)
   end
 
   table.sort(holdings_rows, function(a, b)
-    return (a.usd_value or -1) > (b.usd_value or -1)
+    local a_wallet = (a.wallet or ''):lower()
+    local b_wallet = (b.wallet or ''):lower()
+    if a_wallet ~= b_wallet then
+      return a_wallet < b_wallet
+    end
+
+    local a_asset = (a.asset or ''):lower()
+    local b_asset = (b.asset or ''):lower()
+    if a_asset ~= b_asset then
+      return a_asset < b_asset
+    end
+
+    return (a.network or ''):lower() < (b.network or ''):lower()
   end)
 
   local asset_rows = {}
@@ -498,7 +560,13 @@ local function summarize_holdings(entries, prices)
     wallet_rows[#wallet_rows + 1] = row
   end
   table.sort(wallet_rows, function(a, b)
-    return (a.usd_value or -1) > (b.usd_value or -1)
+    local a_wallet = (a.wallet or ''):lower()
+    local b_wallet = (b.wallet or ''):lower()
+    if a_wallet ~= b_wallet then
+      return a_wallet < b_wallet
+    end
+
+    return (a.address_tail or ''):lower() < (b.address_tail or ''):lower()
   end)
 
   local overview_rows = {
@@ -670,6 +738,17 @@ function M.generate_lines(cb)
     }, fetch_btc, w.address)
   end
 
+  -- DOGE wallets
+  for _, w in ipairs(cfg.doge or {}) do
+    queue({
+      name = w.name,
+      asset = 'DOGE',
+      protocol = 'Wallet',
+      network = 'Dogecoin',
+      address = w.address,
+    }, fetch_doge, w.address)
+  end
+
   -- ETH wallets
   for _, w in ipairs(cfg.eth or {}) do
     queue({
@@ -681,6 +760,17 @@ function M.generate_lines(cb)
     }, fetch_eth, w.address)
   end
 
+  -- ETH — Linea
+  for _, w in ipairs(cfg.eth_linea or {}) do
+    queue({
+      name = w.name,
+      asset = 'ETH',
+      protocol = 'Wallet',
+      network = 'Linea',
+      address = w.address,
+    }, fetch_native_on_chain, 'linea', w.address)
+  end
+
   -- USDT — ERC-20 (Ethereum)
   for _, w in ipairs(cfg.usdt_erc20 or {}) do
     queue({
@@ -690,6 +780,28 @@ function M.generate_lines(cb)
       network = 'Ethereum',
       address = w.address,
     }, fetch_erc20, 'usdt', w.address)
+  end
+
+  -- USDT — BNB Smart Chain
+  for _, w in ipairs(cfg.usdt_bsc or {}) do
+    queue({
+      name = w.name,
+      asset = 'USDT',
+      protocol = 'Wallet',
+      network = 'BNB Smart Chain',
+      address = w.address,
+    }, fetch_erc20_on_chain, 'bsc', 'usdt', w.address)
+  end
+
+  -- USDT — Linea
+  for _, w in ipairs(cfg.usdt_linea or {}) do
+    queue({
+      name = w.name,
+      asset = 'USDT',
+      protocol = 'Wallet',
+      network = 'Linea',
+      address = w.address,
+    }, fetch_erc20_on_chain, 'linea', 'usdt', w.address)
   end
 
   -- USDT — TRC-20 (Tron)
@@ -745,6 +857,28 @@ function M.generate_lines(cb)
       network = 'Ethereum',
       address = w.address,
     }, fetch_erc20, 'dai', w.address)
+  end
+
+  -- mUSD — ERC-20 (Ethereum)
+  for _, w in ipairs(cfg.musd_erc20 or {}) do
+    queue({
+      name = w.name,
+      asset = 'MUSD',
+      protocol = 'Wallet',
+      network = 'Ethereum',
+      address = w.address,
+    }, fetch_erc20, 'musd', w.address)
+  end
+
+  -- mUSD — Linea
+  for _, w in ipairs(cfg.musd_linea or {}) do
+    queue({
+      name = w.name,
+      asset = 'MUSD',
+      protocol = 'Wallet',
+      network = 'Linea',
+      address = w.address,
+    }, fetch_erc20_on_chain, 'linea', 'musd', w.address)
   end
 
   -- Aave V3 lending positions (aToken balanceOf = principal + accrued interest)
