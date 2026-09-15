@@ -1023,31 +1023,6 @@ local function workspace_find_tmux_terminal_buffer(socket_path, session_name)
   return nil
 end
 
-local function workspace_wipe_orphaned_tmux_terminal_buffers(keep_bufs)
-  local keep = {}
-  for _, buf in ipairs(keep_bufs) do
-    keep[buf] = true
-  end
-
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(buf) and not keep[buf] and vim.bo[buf].buftype == "terminal" then
-      local ok_socket = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_socket_path")
-      if ok_socket then
-        local displayed = false
-        for _, win in ipairs(vim.api.nvim_list_wins()) do
-          if vim.api.nvim_win_get_buf(win) == buf then
-            displayed = true
-            break
-          end
-        end
-        if not displayed then
-          pcall(vim.api.nvim_buf_delete, buf, { force = true })
-        end
-      end
-    end
-  end
-end
-
 local function workspace_open_tmux_terminal_here(socket_path, session_name)
   local existing_buf = workspace_find_tmux_terminal_buffer(socket_path, session_name)
   if existing_buf ~= nil then
@@ -1069,18 +1044,14 @@ end
 
 local function workspace_fill_tmux_windows(socket_path, session_names)
   local windows = workspace_sorted_windows()
-  local used_bufs = {}
 
   for index, win in ipairs(windows) do
     vim.api.nvim_set_current_win(win)
     local session_name = session_names[index]
     if session_name ~= nil then
-      local buf = workspace_open_tmux_terminal_here(socket_path, session_name)
-      table.insert(used_bufs, buf)
+      workspace_open_tmux_terminal_here(socket_path, session_name)
     end
   end
-
-  workspace_wipe_orphaned_tmux_terminal_buffers(used_bufs)
 
   vim.cmd("wincmd =")
   vim.cmd("startinsert")
