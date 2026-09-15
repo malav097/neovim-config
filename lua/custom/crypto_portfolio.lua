@@ -183,6 +183,11 @@ local CHAIN_RPCS = {
     'https://rpc.linea.build',
     'https://linea.drpc.org',
   },
+  polygon = {
+    'https://polygon-bor-rpc.publicnode.com',
+    'https://1rpc.io/matic',
+    'https://polygon.drpc.org',
+  },
 }
 
 -- ETH native balance via public JSON-RPC — no API key needed
@@ -217,6 +222,7 @@ local ERC20 = {
     contracts = {
       ethereum = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
       arbitrum = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+      polygon = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
     },
   },
   dai = {
@@ -477,6 +483,7 @@ local function summarize_holdings(entries, prices)
   local by_wallet = {}
   local total_usd = 0
   local lending_usd = 0
+  local lending_stable_usd = 0
   local stablecoin_usd = 0
 
   for _, entry in ipairs(entries) do
@@ -497,6 +504,9 @@ local function summarize_holdings(entries, prices)
       end
       if meta.kind == 'stablecoin' then
         stablecoin_usd = stablecoin_usd + usd_value
+        if is_aave then
+          lending_stable_usd = lending_stable_usd + usd_value
+        end
       end
     end
 
@@ -571,9 +581,9 @@ local function summarize_holdings(entries, prices)
 
   local overview_rows = {
     { 'total portfolio', fmt_usd_raw(total_usd) },
-    { 'stablecoins', fmt_usd_raw(stablecoin_usd) },
+    { 'stablecoins (wallets)', fmt_usd_raw(stablecoin_usd - lending_stable_usd) },
     { 'lending (aave)', fmt_usd_raw(lending_usd) },
-    { 'non-stable assets', fmt_usd_raw(total_usd - stablecoin_usd) },
+    { 'non-stable assets', fmt_usd_raw(total_usd - stablecoin_usd - (lending_usd - lending_stable_usd)) },
   }
 
   local holdings_table_rows = {}
@@ -835,6 +845,17 @@ function M.generate_lines(cb)
       network = 'Arbitrum',
       address = w.address,
     }, fetch_erc20_on_chain, 'arbitrum', 'usdc', w.address)
+  end
+
+  -- USDC — Polygon
+  for _, w in ipairs(cfg.usdc_polygon or {}) do
+    queue({
+      name = w.name,
+      asset = 'USDC',
+      protocol = 'Wallet',
+      network = 'Polygon',
+      address = w.address,
+    }, fetch_erc20_on_chain, 'polygon', 'usdc', w.address)
   end
 
   -- USDC — TRC-20 (Tron)

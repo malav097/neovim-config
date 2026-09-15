@@ -14,6 +14,7 @@
 --   usdt_trc20 — USDT on Tron (RECOMMENDED for most users — lower fees)
 --   usdc_erc20 — USDC on Ethereum
 --   usdc_arbitrum — USDC on Arbitrum
+--   usdc_polygon — USDC on Polygon
 --   usdc_trc20 — USDC on Tron
 --   dai_erc20  — DAI on Ethereum
 --   musd_erc20 — MetaMask USD on Ethereum
@@ -72,6 +73,10 @@ return {
   },
 
   usdc_arbitrum = {
+    { name = 'metamask', address = '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+  },
+
+  usdc_polygon = {
     { name = 'metamask', address = '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
   },
 

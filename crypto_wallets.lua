@@ -46,6 +46,10 @@ return {
     { name = 'metamask-usdc-arbitrum01', address = '0xb2c4A7b2F6FC13AE6423038e90ec456Db358D6fe' },
   },
 
+  usdc_polygon = {
+    { name = 'metamask-usdc04', address = '0x8d862f3a30ab3af9f941e60abc8ac612540bacbe' },
+  },
+
   musd_erc20 = {
     { name = 'eth-musd', address = '0x8d862f3a30ab3af9f941e60abc8ac612540bacbe' },
   },
