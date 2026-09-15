@@ -97,6 +97,62 @@ return {
 				builtin.live_grep({ cwd = window_cwd() })
 			end
 
+			local function open_git_diff(filepath, status)
+				local git_root = vim.fn.systemlist({
+					"git",
+					"-C",
+					vim.fn.fnamemodify(filepath, ":h"),
+					"rev-parse",
+					"--show-toplevel",
+				})[1]
+				if vim.v.shell_error ~= 0 or git_root == nil then
+					vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+					return
+				end
+
+				local relpath = filepath:sub(#git_root + 2)
+				local untracked = status == "??"
+
+				local diff_args
+				if untracked then
+					diff_args = { "git", "-C", git_root, "diff", "--no-index", "--", "/dev/null", relpath }
+				else
+					diff_args = { "git", "-C", git_root, "diff", "HEAD", "--", relpath }
+				end
+
+				local diff_lines = vim.fn.systemlist(diff_args)
+				if #diff_lines == 0 then
+					vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+					return
+				end
+
+				vim.cmd("enew")
+				local buf = vim.api.nvim_get_current_buf()
+				vim.api.nvim_buf_set_lines(buf, 0, -1, false, diff_lines)
+				vim.bo[buf].buftype = "nofile"
+				vim.bo[buf].bufhidden = "wipe"
+				vim.bo[buf].swapfile = false
+				vim.bo[buf].modifiable = false
+				vim.bo[buf].filetype = "diff"
+				pcall(vim.api.nvim_buf_set_name, buf, "diff://" .. relpath)
+			end
+
+			local function git_status_in_window_cwd()
+				builtin.git_status({
+					cwd = window_cwd(),
+					attach_mappings = function(prompt_bufnr, _)
+						actions.select_default:replace(function()
+							local selection = action_state.get_selected_entry()
+							actions.close(prompt_bufnr)
+							if selection ~= nil and selection.path ~= nil then
+								open_git_diff(selection.path, selection.status)
+							end
+						end)
+						return true
+					end,
+				})
+			end
+
 			local function sync_tmux_terminal_cwd_for_buffer(buf, selected_cwd)
 				if buf == nil or not vim.api.nvim_buf_is_valid(buf) then
 					return
@@ -288,6 +344,7 @@ return {
 			vim.keymap.set("n", "<leader>sr", builtin.oldfiles, { desc = "[S]earch Recent Files" })
 			vim.keymap.set("n", "<leader>s.", builtin.oldfiles, { desc = '[S]earch Recent Files ("." for repeat)' })
 			vim.keymap.set("n", "<leader>fc", select_window_cwd, { desc = "[F]ind [C]wd" })
+			vim.keymap.set("n", "<leader>fs", git_status_in_window_cwd, { desc = "[F]ind git [S]tatus" })
 			vim.keymap.set("n", "<leader><leader>", builtin.buffers, { desc = "[ ] Find existing buffers" })
 			vim.keymap.set("n", "<leader>fg", live_grep_in_window_cwd, { desc = "[F]ind by [G]rep" })
 			vim.keymap.set("n", "<leader>ff", find_files_in_window_cwd, { desc = "[F]ind [F]iles" })
