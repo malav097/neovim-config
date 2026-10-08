@@ -436,6 +436,14 @@ local function monthly_template_lines()
   local diary_dir = diary_dir_from_path(name) or '~/Dropbox/log/diary/monthly/'
   local prev_lines = previous_month_tasks_lines(year, month_num, diary_dir)
   vim.list_extend(lines, prev_lines)
+  if not vim.tbl_contains(prev_lines, 'NOTAS ALEATORIAS') then
+    vim.list_extend(lines, {
+      '',
+      '================================================================================ ',
+      'NOTAS ALEATORIAS',
+      '',
+    })
+  end
   return lines
 end
 
