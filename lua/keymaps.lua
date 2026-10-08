@@ -1156,6 +1156,14 @@ vim.keymap.set("n", "<leader>a9", function()
   workspace_close_zoom_tab()
 end, { desc = "Close workspace zoom tab" })
 
+vim.keymap.set("n", "<leader>a=", function()
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    vim.wo[win].winfixheight = false
+    vim.wo[win].winfixwidth = false
+  end
+  vim.cmd("wincmd =")
+end, { desc = "Equalize all window sizes in the current tab" })
+
 vim.api.nvim_create_user_command("WorkspaceInit4", function()
   local socket_path = workspace_tmux_socket_path()
 
