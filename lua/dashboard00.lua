@@ -1,20 +1,9 @@
 -- pcall(function()
 
-vim.api.nvim_create_autocmd("VimEnter", {
-  group = group,
-  callback = function()
-    -- Only when launched without files/stdin
-    if vim.fn.argc() ~= 0 or vim.fn.line2byte("$") ~= -1 then
-      return
-    end
-
-    -- remember your global defaults (for restoring later)
-    local default_number = vim.o.number
-    local default_relativenumber = vim.o.relativenumber
-
+-- Build the startscreen banner buffer. keymaps.lua also uses it for <leader>a0.
+function startscreen_create_buffer()
     -- Create an unlisted scratch buffer (like dashboards do)
     local buf = vim.api.nvim_create_buf(false, true) -- listed=false, scratch=true
-    vim.api.nvim_set_current_buf(buf)
 
     -- Buffer/window options so :wqa! never complains
     vim.bo[buf].buftype = "nofile"
@@ -119,6 +108,23 @@ vim.api.nvim_create_autocmd("VimEnter", {
     vim.bo[buf].modifiable = false
     vim.bo[buf].readonly = true
     vim.bo[buf].modified = false -- <- crucial so :wqa! doesn't complain
+    return buf
+end
+
+vim.api.nvim_create_autocmd("VimEnter", {
+  group = group,
+  callback = function()
+    -- Only when launched without files/stdin
+    if vim.fn.argc() ~= 0 or vim.fn.line2byte("$") ~= -1 then
+      return
+    end
+
+    -- remember your global defaults (for restoring later)
+    local default_number = vim.o.number
+    local default_relativenumber = vim.o.relativenumber
+
+    local buf = startscreen_create_buffer()
+    vim.api.nvim_set_current_buf(buf)
 
     vim.schedule(function()
       -- create right split and move focus there

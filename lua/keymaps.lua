@@ -1161,8 +1161,25 @@ vim.keymap.set("n", "<leader>t[", function()
 end, { desc = "tmux copy mode for current workspace terminal" })
 
 vim.keymap.set("n", "<leader>a0", function()
-  workspace_zoom_current_window()
-end, { desc = "Maximize current workspace window" })
+  -- Same as <leader>a1, plus the startscreen banner in a window on the left.
+  vim.cmd("WorkspaceInit1")
+  if vim.bo.buftype ~= "terminal" then
+    return
+  end
+
+  local session_win = vim.api.nvim_get_current_win()
+  vim.cmd("leftabove vsplit")
+  local banner_buf = startscreen_create_buffer()
+  vim.api.nvim_win_set_buf(0, banner_buf)
+  vim.wo.number = false
+  vim.wo.relativenumber = false
+  vim.wo.winfixheight = false
+  vim.wo.winfixwidth = false
+  vim.api.nvim_win_set_width(0, 80)
+
+  vim.api.nvim_set_current_win(session_win)
+  vim.cmd("startinsert")
+end, { desc = "Open 1-pane tmux workspace with the startscreen banner on the left" })
 
 vim.keymap.set("n", "<leader>a9", function()
   workspace_close_zoom_tab()
@@ -1273,6 +1290,11 @@ local function workspace_tmux_collect_panes(socket_path)
         pane_id,
       })
       if vim.v.shell_error == 0 then
+        -- capture-pane includes the empty rows below the last output; drop them so
+        -- the bottom of the capture is the newest text.
+        while #content > 0 and not content[#content]:match("%S") do
+          table.remove(content)
+        end
         table.insert(panes, {
           socket_path = socket_path,
           session_name = session_name,
@@ -1415,6 +1437,42 @@ local function workspace_tmux_add_session(socket_path, session_name, cwd)
   })
 end
 
+-- Turn a claude prompt into a tmux session name: lowercase words joined by "-",
+-- cut to 40 characters, with a numeric suffix if the name is taken.
+local function workspace_tmux_session_name_from_prompt(socket_path, prompt)
+  local accents = {
+    ["á"] = "a", ["é"] = "e", ["í"] = "i", ["ó"] = "o", ["ú"] = "u", ["ü"] = "u", ["ñ"] = "n",
+    ["Á"] = "a", ["É"] = "e", ["Í"] = "i", ["Ó"] = "o", ["Ú"] = "u", ["Ü"] = "u", ["Ñ"] = "n",
+  }
+  for accented, plain in pairs(accents) do
+    prompt = prompt:gsub(accented, plain)
+  end
+  local slug = prompt:lower():gsub("[^%w]+", "-"):gsub("^-+", ""):sub(1, 40):gsub("-+$", "")
+  if slug == "" then
+    return workspace_tmux_next_session_name(socket_path)
+  end
+
+  local name = slug
+  local index = 2
+  while workspace_tmux_session_exists(socket_path, "=" .. name) do
+    name = slug .. "-" .. index
+    index = index + 1
+  end
+  return name
+end
+
+local function workspace_tmux_start_claude(socket_path, session_name, prompt)
+  -- Type the command into the shell of the main window, so the pane goes back
+  -- to zsh when claude exits instead of closing.
+  local command = "claude"
+  if prompt ~= "" then
+    command = command .. " " .. vim.fn.shellescape(prompt)
+  end
+  local target = "=" .. session_name .. ":main"
+  workspace_run_tmux(socket_path, { "send-keys", "-t", target, "-l", command })
+  workspace_run_tmux(socket_path, { "send-keys", "-t", target, "Enter" })
+end
+
 local function workspace_tmux_search_content()
   local socket_path = workspace_tmux_socket_path()
   local source_cwd = vim.fn.getcwd(0)
@@ -1549,24 +1607,17 @@ local function workspace_tmux_search_content()
     local prompt = vim.trim(action_state.get_current_line())
     actions.close(prompt_bufnr)
 
-    local default_name = prompt ~= "" and prompt or workspace_tmux_next_session_name(socket_path)
-    vim.ui.input({ prompt = "New tmux session name: ", default = default_name }, function(input)
+    vim.ui.input({ prompt = "Claude prompt (also the session name): ", default = prompt }, function(input)
       if input == nil then
         return
       end
-      local session_name = vim.trim(input)
-      if session_name == "" then
-        session_name = workspace_tmux_next_session_name(socket_path)
-      end
-      -- tmux does not allow "." or ":" in session names.
-      session_name = session_name:gsub("[.:]", "_")
+      local claude_prompt = vim.trim(input)
+      local session_name = workspace_tmux_session_name_from_prompt(socket_path, claude_prompt)
 
-      if workspace_tmux_session_exists(socket_path, "=" .. session_name) then
-        vim.notify("tmux session already exists: " .. session_name, vim.log.levels.WARN)
-        return
-      end
-
-      local ok, err = pcall(workspace_tmux_add_session, socket_path, session_name, source_cwd)
+      local ok, err = pcall(function()
+        workspace_tmux_add_session(socket_path, session_name, source_cwd)
+        workspace_tmux_start_claude(socket_path, session_name, claude_prompt)
+      end)
       if not ok then
         vim.notify("tmux new-session failed:\n" .. tostring(err), vim.log.levels.ERROR)
         return
@@ -1578,8 +1629,8 @@ local function workspace_tmux_search_content()
   end
 
   pickers.new({}, {
-    prompt_title = "Search tmux sessions   <C-a> add   <C-x> kill   <Tab> mark",
-    results_title = "Sessions   <C-a> add   <C-x> kill",
+    prompt_title = "Search tmux sessions   <C-a> new claude   <C-x> kill   <Tab> mark",
+    results_title = "Sessions   <C-a> new claude   <C-x> kill",
     finder = make_finder(),
     sorter = session_sorter,
     previewer = previewers.new_buffer_previewer({
@@ -1600,21 +1651,31 @@ local function workspace_tmux_search_content()
           })
         end
 
-        -- The previewer attaches the buffer to the window in a scheduled callback,
-        -- so move the cursor after that runs.
+        -- Set the first visible line from the real window height instead of using zz.
+        -- Without a match the last line sits at the bottom of the window, so the
+        -- preview shows the newest output. With a match the line sits in the middle.
         local winid = self.state.winid
-        vim.schedule(function()
+        local centered = result.line_index ~= nil
+        local function place_view()
           if winid == nil or not vim.api.nvim_win_is_valid(winid) then
             return
           end
           if vim.api.nvim_win_get_buf(winid) ~= bufnr then
             return
           end
-          pcall(vim.api.nvim_win_set_cursor, winid, { math.max(1, target_line), 0 })
+          local height = vim.api.nvim_win_get_height(winid)
+          local line_count = vim.api.nvim_buf_line_count(bufnr)
+          local target = math.min(math.max(1, target_line), line_count)
+          local topline = centered and (target - math.floor(height / 2)) or (target - height + 1)
+          topline = math.max(1, math.min(topline, math.max(1, line_count - height + 1)))
           vim.api.nvim_win_call(winid, function()
-            vim.cmd("normal! zz")
+            vim.fn.winrestview({ topline = topline, lnum = target, col = 0 })
           end)
-        end)
+        end
+        -- The previewer attaches the buffer to the window in a scheduled callback,
+        -- so place the view after that runs, and once more after the layout settles.
+        vim.schedule(place_view)
+        vim.defer_fn(place_view, 50)
       end,
     }),
     attach_mappings = function(prompt_bufnr, map)
