@@ -1138,6 +1138,10 @@ vim.keymap.set("n", "<leader>a2", function()
   vim.cmd("WorkspaceInit2")
 end, { desc = "Open 2-pane tmux workspace" })
 
+vim.keymap.set("n", "<leader>a1", function()
+  vim.cmd("WorkspaceInit1")
+end, { desc = "Open 1-pane tmux workspace" })
+
 vim.keymap.set("n", "<leader>tn", function()
   workspace_tmux_command_for_current_buffer(function(session_name)
     return { "next-window", "-t", session_name }
@@ -1213,6 +1217,431 @@ vim.api.nvim_create_user_command("WorkspaceInit2", function()
     return
   end
 end, { desc = "Open a 2-column tmux-backed workspace in the current tab" })
+
+vim.api.nvim_create_user_command("WorkspaceInit1", function()
+  local socket_path = workspace_tmux_socket_path()
+
+  local ok, err = pcall(function()
+    -- If the current window already shows a workspace tmux session, keep that one.
+    local focused_socket, focused_session = workspace_current_tmux_target()
+    if focused_socket ~= nil and focused_session ~= nil then
+      vim.cmd("only")
+      vim.wo.winfixheight = false
+      vim.wo.winfixwidth = false
+      vim.cmd("startinsert")
+      return
+    end
+
+    local session_names = workspace_prepare_tmux(socket_path, "workspace-init1", 1)
+    vim.cmd("only")
+    workspace_fill_tmux_windows(socket_path, session_names)
+  end)
+  if not ok then
+    vim.notify("WorkspaceInit1 tmux error:\n" .. err, vim.log.levels.ERROR)
+    return
+  end
+end, { desc = "Open a single tmux-backed workspace pane in the current tab" })
+
+local function workspace_tmux_collect_panes(socket_path)
+  local pane_lines = vim.fn.systemlist({
+    "tmux",
+    "-S",
+    socket_path,
+    "list-panes",
+    "-a",
+    "-F",
+    "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_current_command}",
+  })
+  if vim.v.shell_error ~= 0 then
+    return {}
+  end
+
+  local panes = {}
+  for _, line in ipairs(pane_lines) do
+    local session_name, window_id, window_index, window_name, pane_id, command =
+      line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]*)\t([^\t]+)\t([^\t]*)$")
+    if session_name ~= nil then
+      local content = vim.fn.systemlist({
+        "tmux",
+        "-S",
+        socket_path,
+        "capture-pane",
+        "-p",
+        "-S",
+        "-",
+        "-t",
+        pane_id,
+      })
+      if vim.v.shell_error == 0 then
+        table.insert(panes, {
+          socket_path = socket_path,
+          session_name = session_name,
+          window_id = window_id,
+          window_index = window_index,
+          window_name = window_name,
+          pane_id = pane_id,
+          command = command,
+          lines = content,
+        })
+      end
+    end
+  end
+
+  table.sort(panes, function(a, b)
+    if a.session_name == b.session_name then
+      return tonumber(a.window_index) < tonumber(b.window_index)
+    end
+    return a.session_name < b.session_name
+  end)
+
+  return panes
+end
+
+local function workspace_tmux_jump_to_line(pane, line_index)
+  local target_win = nil
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    local ok_socket, buf_socket = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_socket_path")
+    local ok_session, buf_session = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_session_name")
+    if ok_socket and ok_session and buf_socket == pane.socket_path and buf_session == pane.session_name then
+      target_win = win
+      break
+    end
+  end
+
+  if target_win ~= nil then
+    vim.api.nvim_set_current_win(target_win)
+  else
+    workspace_open_tmux_terminal_here(pane.socket_path, pane.session_name)
+  end
+
+  local ok, err = pcall(function()
+    if line_index == nil then
+      return
+    end
+    workspace_run_tmux(pane.socket_path, { "select-window", "-t", pane.window_id })
+    workspace_run_tmux(pane.socket_path, { "select-pane", "-t", pane.pane_id })
+
+    -- goto-line takes the scroll offset from the bottom of the history, so the
+    -- line at capture index i sits at the top of the screen when offset = history_size - i.
+    -- Keep a few lines of context above the match.
+    local history_size = tonumber(vim.fn.system({
+      "tmux",
+      "-S",
+      pane.socket_path,
+      "display-message",
+      "-p",
+      "-t",
+      pane.pane_id,
+      "#{history_size}",
+    })) or 0
+    local offset = math.max(0, math.min(history_size, history_size - line_index + 5))
+    if offset > 0 then
+      workspace_run_tmux(pane.socket_path, { "copy-mode", "-t", pane.pane_id })
+      workspace_run_tmux(pane.socket_path, { "send-keys", "-X", "-t", pane.pane_id, "goto-line", tostring(offset) })
+    end
+  end)
+  if not ok then
+    vim.notify("tmux jump failed:\n" .. tostring(err), vim.log.levels.ERROR)
+  end
+
+  vim.cmd("startinsert")
+end
+
+local function workspace_tmux_build_sessions(panes)
+  -- One picker entry per session. A session can have several panes (main and aux windows).
+  local sessions = {}
+  local sessions_by_name = {}
+  for _, pane in ipairs(panes) do
+    local session = sessions_by_name[pane.session_name]
+    if session == nil then
+      session = { name = pane.session_name, panes = {} }
+      sessions_by_name[pane.session_name] = session
+      table.insert(sessions, session)
+    end
+    pane.lower_lines = {}
+    for index, text in ipairs(pane.lines) do
+      pane.lower_lines[index] = text:lower()
+    end
+    table.insert(session.panes, pane)
+  end
+  return sessions
+end
+
+local function workspace_tmux_wipe_session_buffers(socket_path, session_name)
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "terminal" then
+      local ok_socket, buf_socket = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_socket_path")
+      local ok_session, buf_session = pcall(vim.api.nvim_buf_get_var, buf, "workspace_tmux_session_name")
+      if ok_socket and ok_session and buf_socket == socket_path and buf_session == session_name then
+        -- Put an empty buffer in every window that shows it, so the layout keeps its splits.
+        for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+          vim.api.nvim_win_call(win, workspace_open_empty_buffer_here)
+        end
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+      end
+    end
+  end
+end
+
+local function workspace_tmux_next_session_name(socket_path)
+  local index = 1
+  while workspace_tmux_session_exists(socket_path, "=workspace-pane-" .. index) do
+    index = index + 1
+  end
+  return "workspace-pane-" .. index
+end
+
+local function workspace_tmux_add_session(socket_path, session_name, cwd)
+  workspace_run_tmux(socket_path, {
+    "new-session",
+    "-d",
+    "-s",
+    session_name,
+    "-n",
+    "main",
+    "-c",
+    cwd,
+  })
+  workspace_run_tmux(socket_path, {
+    "new-window",
+    "-d",
+    "-t",
+    session_name .. ":",
+    "-n",
+    "aux",
+    "-c",
+    cwd,
+  })
+end
+
+local function workspace_tmux_search_content()
+  local socket_path = workspace_tmux_socket_path()
+  local source_cwd = vim.fn.getcwd(0)
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local previewers = require("telescope.previewers")
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+  local sorters = require("telescope.sorters")
+  local preview_ns = vim.api.nvim_create_namespace("workspace_tmux_search_preview")
+
+  -- Every whitespace-separated term of the prompt must appear in the same line.
+  -- Smartcase: an uppercase letter in the prompt makes the match case sensitive.
+  local current_prompt = ""
+  local match_cache = {}
+
+  local function session_matches(session, prompt)
+    match_cache[prompt] = match_cache[prompt] or {}
+    local cached = match_cache[prompt][session.name]
+    if cached ~= nil then
+      return cached
+    end
+
+    local result = { count = 0, pane = nil, line_index = nil, name_match = false }
+    local terms = vim.split(prompt, "%s+", { trimempty = true })
+    if #terms == 0 then
+      match_cache[prompt][session.name] = result
+      return result
+    end
+
+    local case_sensitive = prompt:match("%u") ~= nil
+    local function line_has_terms(text)
+      for _, term in ipairs(terms) do
+        if not text:find(term, 1, true) then
+          return false
+        end
+      end
+      return true
+    end
+
+    result.name_match = line_has_terms(case_sensitive and session.name or session.name:lower())
+    for _, pane in ipairs(session.panes) do
+      local lines = case_sensitive and pane.lines or pane.lower_lines
+      for index, text in ipairs(lines) do
+        if line_has_terms(text) then
+          result.count = result.count + 1
+          -- Keep the last match: the most recent output of the session.
+          result.pane = pane
+          result.line_index = index
+        end
+      end
+    end
+
+    match_cache[prompt][session.name] = result
+    return result
+  end
+
+  local function make_finder()
+    match_cache = {}
+    local sessions = workspace_tmux_build_sessions(workspace_tmux_collect_panes(socket_path))
+    return finders.new_table({
+      results = sessions,
+      entry_maker = function(session)
+        local commands = {}
+        for _, pane in ipairs(session.panes) do
+          table.insert(commands, pane.command)
+        end
+        local summary = table.concat(commands, ", ")
+        return {
+          value = session,
+          ordinal = session.name,
+          display = function(entry)
+            local result = session_matches(entry.value, current_prompt)
+            if result.count > 0 then
+              return string.format("%-28s %4d matches   (%s)", session.name, result.count, summary)
+            end
+            return string.format("%-28s %12s   (%s)", session.name, "", summary)
+          end,
+        }
+      end,
+    })
+  end
+
+  local session_sorter = sorters.Sorter:new({
+    scoring_function = function(_, prompt, _, entry)
+      current_prompt = prompt or ""
+      local result = session_matches(entry.value, current_prompt)
+      if current_prompt:match("%S") == nil then
+        return 1
+      end
+      if result.count == 0 and not result.name_match then
+        return -1
+      end
+      return 1 / (1 + result.count)
+    end,
+  })
+
+  local function kill_sessions(prompt_bufnr)
+    local picker = action_state.get_current_picker(prompt_bufnr)
+    local targets = picker:get_multi_selection()
+    if #targets == 0 then
+      local selection = action_state.get_selected_entry()
+      if selection == nil then
+        return
+      end
+      targets = { selection }
+    end
+
+    local names = {}
+    for _, entry in ipairs(targets) do
+      table.insert(names, entry.value.name)
+    end
+
+    local choice = vim.fn.confirm("Kill tmux session(s): " .. table.concat(names, ", ") .. "?", "&Yes\n&No", 2)
+    if choice ~= 1 then
+      return
+    end
+
+    for _, name in ipairs(names) do
+      local ok, err = pcall(workspace_run_tmux, socket_path, { "kill-session", "-t", "=" .. name })
+      if not ok then
+        vim.notify("tmux kill-session failed for " .. name .. ":\n" .. tostring(err), vim.log.levels.ERROR)
+      end
+      workspace_tmux_wipe_session_buffers(socket_path, name)
+    end
+
+    picker:refresh(make_finder(), { reset_prompt = false })
+  end
+
+  local function add_session(prompt_bufnr)
+    local prompt = vim.trim(action_state.get_current_line())
+    actions.close(prompt_bufnr)
+
+    local default_name = prompt ~= "" and prompt or workspace_tmux_next_session_name(socket_path)
+    vim.ui.input({ prompt = "New tmux session name: ", default = default_name }, function(input)
+      if input == nil then
+        return
+      end
+      local session_name = vim.trim(input)
+      if session_name == "" then
+        session_name = workspace_tmux_next_session_name(socket_path)
+      end
+      -- tmux does not allow "." or ":" in session names.
+      session_name = session_name:gsub("[.:]", "_")
+
+      if workspace_tmux_session_exists(socket_path, "=" .. session_name) then
+        vim.notify("tmux session already exists: " .. session_name, vim.log.levels.WARN)
+        return
+      end
+
+      local ok, err = pcall(workspace_tmux_add_session, socket_path, session_name, source_cwd)
+      if not ok then
+        vim.notify("tmux new-session failed:\n" .. tostring(err), vim.log.levels.ERROR)
+        return
+      end
+
+      workspace_open_tmux_terminal_here(socket_path, session_name)
+      vim.cmd("startinsert")
+    end)
+  end
+
+  pickers.new({}, {
+    prompt_title = "Search tmux sessions   <C-a> add   <C-x> kill   <Tab> mark",
+    results_title = "Sessions   <C-a> add   <C-x> kill",
+    finder = make_finder(),
+    sorter = session_sorter,
+    previewer = previewers.new_buffer_previewer({
+      title = "tmux session",
+      define_preview = function(self, entry)
+        local session = entry.value
+        local result = session_matches(session, current_prompt)
+        local pane = result.pane or session.panes[1]
+        local bufnr = self.state.bufnr
+        vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, pane.lines)
+        vim.api.nvim_buf_clear_namespace(bufnr, preview_ns, 0, -1)
+
+        local target_line = #pane.lines
+        if result.line_index ~= nil then
+          target_line = result.line_index
+          vim.api.nvim_buf_set_extmark(bufnr, preview_ns, target_line - 1, 0, {
+            line_hl_group = "TelescopePreviewLine",
+          })
+        end
+
+        -- The previewer attaches the buffer to the window in a scheduled callback,
+        -- so move the cursor after that runs.
+        local winid = self.state.winid
+        vim.schedule(function()
+          if winid == nil or not vim.api.nvim_win_is_valid(winid) then
+            return
+          end
+          if vim.api.nvim_win_get_buf(winid) ~= bufnr then
+            return
+          end
+          pcall(vim.api.nvim_win_set_cursor, winid, { math.max(1, target_line), 0 })
+          vim.api.nvim_win_call(winid, function()
+            vim.cmd("normal! zz")
+          end)
+        end)
+      end,
+    }),
+    attach_mappings = function(prompt_bufnr, map)
+      actions.select_default:replace(function()
+        local selection = action_state.get_selected_entry()
+        actions.close(prompt_bufnr)
+        if selection == nil then
+          return
+        end
+        local session = selection.value
+        local result = session_matches(session, current_prompt)
+        if result.pane ~= nil then
+          workspace_tmux_jump_to_line(result.pane, result.line_index - 1)
+        else
+          workspace_tmux_jump_to_line(session.panes[1], nil)
+        end
+      end)
+      for _, mode in ipairs({ "i", "n" }) do
+        map(mode, "<C-x>", kill_sessions)
+        map(mode, "<C-a>", add_session)
+      end
+      return true
+    end,
+  }):find()
+end
+
+vim.keymap.set("n", "<leader>st", workspace_tmux_search_content, { desc = "[S]earch [T]mux workspace sessions content" })
 
 vim.keymap.set("c", "<CR>", function()
   if vim.fn.getcmdtype() == ":" and vim.fn.getcmdline() == "workspace-4" then
