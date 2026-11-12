@@ -1387,6 +1387,58 @@ local function workspace_tmux_build_sessions(panes)
     end
     table.insert(session.panes, pane)
   end
+
+  -- Most recently used first. Every nvim terminal attached to a session is a tmux
+  -- client, and client_activity is the time of its last key press. Sessions with
+  -- no client fall back to the time they were last attached.
+  local socket_path = panes[1] and panes[1].socket_path
+  local last_used = {}
+  if socket_path ~= nil then
+    local session_lines = vim.fn.systemlist({
+      "tmux",
+      "-S",
+      socket_path,
+      "list-sessions",
+      "-F",
+      "#{session_name}\t#{session_last_attached}\t#{session_created}",
+    })
+    if vim.v.shell_error == 0 then
+      for _, line in ipairs(session_lines) do
+        local name, attached, created = line:match("^(.*)\t(%d*)\t(%d*)$")
+        if name ~= nil then
+          last_used[name] = math.max(tonumber(attached) or 0, tonumber(created) or 0)
+        end
+      end
+    end
+    local client_lines = vim.fn.systemlist({
+      "tmux",
+      "-S",
+      socket_path,
+      "list-clients",
+      "-F",
+      "#{client_session}\t#{client_activity}",
+    })
+    if vim.v.shell_error == 0 then
+      for _, line in ipairs(client_lines) do
+        local name, activity = line:match("^(.*)\t(%d*)$")
+        if name ~= nil then
+          last_used[name] = math.max(last_used[name] or 0, tonumber(activity) or 0)
+        end
+      end
+    end
+  end
+
+  -- Telescope keeps this order when the prompt is empty and shows the first
+  -- entry next to the prompt, like <leader>sr.
+  table.sort(sessions, function(a, b)
+    local used_a = last_used[a.name] or 0
+    local used_b = last_used[b.name] or 0
+    if used_a ~= used_b then
+      return used_a > used_b
+    end
+    return a.name < b.name
+  end)
+
   return sessions
 end
 
@@ -1414,8 +1466,8 @@ local function workspace_tmux_next_session_name(socket_path)
   return "workspace-pane-" .. index
 end
 
-local function workspace_tmux_add_session(socket_path, session_name, cwd)
-  workspace_run_tmux(socket_path, {
+local function workspace_tmux_add_session(socket_path, session_name, cwd, claude_prompt)
+  local args = {
     "new-session",
     "-d",
     "-s",
@@ -1424,7 +1476,18 @@ local function workspace_tmux_add_session(socket_path, session_name, cwd)
     "main",
     "-c",
     cwd,
-  })
+  }
+  if claude_prompt ~= nil and claude_prompt ~= "" then
+    -- The shell of the main window gets the prompt in WORKSPACE_CLAUDE_PROMPT.
+    -- tmux passes the value as an argument, so newlines and quotes stay intact.
+    table.insert(args, "-e")
+    table.insert(args, "WORKSPACE_CLAUDE_PROMPT=" .. claude_prompt)
+  end
+  workspace_run_tmux(socket_path, args)
+  if claude_prompt ~= nil and claude_prompt ~= "" then
+    -- Keep the variable out of the aux window.
+    workspace_run_tmux(socket_path, { "set-environment", "-t", "=" .. session_name, "-u", "WORKSPACE_CLAUDE_PROMPT" })
+  end
   workspace_run_tmux(socket_path, {
     "new-window",
     "-d",
@@ -1466,16 +1529,83 @@ local function workspace_tmux_start_claude(socket_path, session_name, prompt)
   -- to zsh when claude exits instead of closing.
   local command = "claude"
   if prompt ~= "" then
-    command = command .. " " .. vim.fn.shellescape(prompt)
+    -- workspace_tmux_add_session put the prompt in WORKSPACE_CLAUDE_PROMPT, so a
+    -- multiline prompt reaches claude as one argument instead of being typed line by line.
+    command = command .. ' "$WORKSPACE_CLAUDE_PROMPT"'
   end
   local target = "=" .. session_name .. ":main"
   workspace_run_tmux(socket_path, { "send-keys", "-t", target, "-l", command })
   workspace_run_tmux(socket_path, { "send-keys", "-t", target, "Enter" })
 end
 
+-- Floating editor for a multiline claude prompt. Calls on_submit with the text,
+-- or does nothing if the user cancels.
+local function workspace_claude_prompt_editor(default_text, on_submit)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].filetype = "markdown"
+  if default_text ~= "" then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(default_text, "\n", { plain = true }))
+  end
+
+  local width = math.min(120, math.floor(vim.o.columns * 0.8))
+  local height = math.min(20, math.floor(vim.o.lines * 0.6))
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = " Claude prompt: first line is the session name ",
+    title_pos = "center",
+    footer = " <C-s> send   normal mode: <CR> send, q cancel ",
+    footer_pos = "center",
+  })
+  vim.wo[win].wrap = true
+  vim.wo[win].linebreak = true
+
+  local function close()
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+
+  local function submit()
+    local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
+    vim.cmd("stopinsert")
+    close()
+    vim.schedule(function()
+      on_submit(text)
+    end)
+  end
+
+  local opts = { buffer = buf, nowait = true }
+  vim.keymap.set({ "n", "i" }, "<C-s>", submit, opts)
+  vim.keymap.set("n", "<CR>", submit, opts)
+  vim.keymap.set("n", "q", close, opts)
+
+  -- Telescope leaves insert mode while it closes, so enter insert mode after that.
+  vim.schedule(function()
+    if vim.api.nvim_get_current_win() == win then
+      vim.cmd("startinsert!")
+    end
+  end)
+end
+
 local function workspace_tmux_search_content()
   local socket_path = workspace_tmux_socket_path()
   local source_cwd = vim.fn.getcwd(0)
+
+  -- The session shown in the window where the picker was opened, if any.
+  local source_buf = vim.api.nvim_get_current_buf()
+  local ok_source_socket, source_socket = pcall(vim.api.nvim_buf_get_var, source_buf, "workspace_tmux_socket_path")
+  local ok_source_session, source_session = pcall(vim.api.nvim_buf_get_var, source_buf, "workspace_tmux_session_name")
+  local current_session_name = nil
+  if ok_source_socket and ok_source_session and source_socket == socket_path then
+    current_session_name = source_session
+  end
 
   local pickers = require("telescope.pickers")
   local finders = require("telescope.finders")
@@ -1547,10 +1677,19 @@ local function workspace_tmux_search_content()
           ordinal = session.name,
           display = function(entry)
             local result = session_matches(entry.value, current_prompt)
+            local is_current = session.name == current_session_name
+            local marker = is_current and "▶ " or "  "
+            local suffix = is_current and "   <- current" or ""
+            local text
             if result.count > 0 then
-              return string.format("%-28s %4d matches   (%s)", session.name, result.count, summary)
+              text = string.format("%s%-28s %4d matches   (%s)%s", marker, session.name, result.count, summary, suffix)
+            else
+              text = string.format("%s%-28s %12s   (%s)%s", marker, session.name, "", summary, suffix)
             end
-            return string.format("%-28s %12s   (%s)", session.name, "", summary)
+            if is_current then
+              return text, { { { 0, #text }, "DiagnosticOk" } }
+            end
+            return text
           end,
         }
       end,
@@ -1607,15 +1746,13 @@ local function workspace_tmux_search_content()
     local prompt = vim.trim(action_state.get_current_line())
     actions.close(prompt_bufnr)
 
-    vim.ui.input({ prompt = "Claude prompt (also the session name): ", default = prompt }, function(input)
-      if input == nil then
-        return
-      end
-      local claude_prompt = vim.trim(input)
-      local session_name = workspace_tmux_session_name_from_prompt(socket_path, claude_prompt)
+    workspace_claude_prompt_editor(prompt, function(claude_prompt)
+      -- The first line names the session; the whole text, first line included, is the prompt.
+      local first_line = claude_prompt:match("^[^\n]*")
+      local session_name = workspace_tmux_session_name_from_prompt(socket_path, first_line)
 
       local ok, err = pcall(function()
-        workspace_tmux_add_session(socket_path, session_name, source_cwd)
+        workspace_tmux_add_session(socket_path, session_name, source_cwd, claude_prompt)
         workspace_tmux_start_claude(socket_path, session_name, claude_prompt)
       end)
       if not ok then
@@ -1630,7 +1767,7 @@ local function workspace_tmux_search_content()
 
   pickers.new({}, {
     prompt_title = "Search tmux sessions   <C-a> new claude   <C-x> kill   <Tab> mark",
-    results_title = "Sessions   <C-a> new claude   <C-x> kill",
+    results_title = "Sessions   ▶ current   <C-a> new claude   <C-x> kill",
     finder = make_finder(),
     sorter = session_sorter,
     previewer = previewers.new_buffer_previewer({
